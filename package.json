@@ -1,0 +1,21 @@
+{
+  "name": "autosheet",
+  "version": "0.1.0",
+  "description": "Pure JavaScript spreadsheet calculation engine with custom function support",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "echo 'No linter configured'"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.0"
+  }
+}
+
+

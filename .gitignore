@@ -1,0 +1,112 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Diagnostic reports
+report.*.json
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Dependency directories
+node_modules/
+web/node_modules/
+bower_components/
+
+# Build outputs
+build/
+dist/
+web/dist/
+coverage/
+
+# Caches
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+.rpt2_cache/
+.fusebox/
+.nyc_output/
+.tmp/
+tmp/
+temp/
+
+# Vite
+node_modules/.vite/
+web/node_modules/.vite/
+.vite/
+web/.vite/
+
+# Next/Nuxt/Gatsby (harmless if unused)
+.next/
+.nuxt/
+_out/
+public/dist/
+.cache-loader/
+
+# TypeScript
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# OS artifacts
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# Editors/IDEs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.sw?
+*.swo
+*.swn
+*.swp
+*~
+
+# Test outputs
+junit.xml
+jest-junit.xml
+coverage-final.json
+.jest/
+playwright-report/
+test-results/
+cypress/videos/
+cypress/screenshots/
+
+# Archives
+*.tgz
+*.tar
+*.gz
+*.zip
+
+# PnP
+.pnp.*
+
+# Local overrides
+*.local
+
+# Mac code signing
+*.dSYM/

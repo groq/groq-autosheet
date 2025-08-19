@@ -1,0 +1,58 @@
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+.app { display: flex; flex-direction: column; height: 100%; }
+.toolbar { padding: 8px 12px; border-bottom: 1px solid #ddd; background: #ffffff; color: #111; display: flex; align-items: center; gap: 8px; }
+.title { font-weight: 600; }
+.tabs { display: flex; gap: 4px; }
+.tab { padding: 6px 10px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
+.tab.active { background: #e8eefc; border-color: #a8c1ff; }
+.formula-bar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #eee; background: #ffffff; }
+.formula-bar .name { width: 64px; display: flex; align-items: center; justify-content: center; background: #f6f6f6; border: 1px solid #ddd; border-radius: 4px; color: #111; }
+.formula-bar input { flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #111; }
+.formula-bar button { background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
+.main { flex: 1; display: flex; min-height: 0; }
+.main.split .sheet-pane { min-width: 320px; border-right: 1px solid #eee; display: flex; flex-direction: column; }
+.main.split .editor-pane { min-width: 280px; display: flex; flex-direction: column; }
+.split-resizer { width: 6px; cursor: col-resize; background: transparent; position: relative; }
+.split-resizer::before { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; right: 2px; background: #e9e9e9; }
+.main:not(.split) .sheet-pane, .main:not(.split) .editor-pane { flex: 1; display: flex; min-width: 0; }
+.grid { flex: 1; overflow: auto; background: #fff; color: #111; position: relative; }
+/* Remove default focus outline that appears when the grid gains focus on click */
+.grid:focus, .grid:focus-visible { outline: none; }
+table { border-collapse: separate; border-spacing: 0; width: max-content; background: #fff; table-layout: fixed; }
+th, td { border: 1px solid #e0e0e0; padding: 6px 8px; background: #fff; color: #111; }
+th { background: #fafafa; position: sticky; top: 0; z-index: 1; color: #555; }
+tbody th { position: sticky; left: 0; background: #fafafa; z-index: 2; color: #555; }
+td.sel { outline: 2px solid #3b82f6; outline-offset: -2px; }
+td.sel-range { background: rgba(59, 130, 246, 0.12); position: relative; }
+td.sel-anchor { outline: 2px solid #3b82f6; outline-offset: -2px; }
+
+.selection-outline { position: absolute; pointer-events: none; border: 1px solid #3b82f6; box-sizing: border-box; z-index: 4; }
+
+/* Resizers */
+.col-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
+.row-resizer { position: absolute; bottom: -3px; left: 0; width: 100%; height: 6px; cursor: row-resize; z-index: 3; }
+.col-header-label { user-select: none; }
+
+/* Make cells not shrink below content when measuring */
+.cell-display { width: 100%; height: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Scripts panel */
+.scripts-pane { display: flex; flex-direction: column; height: 100%; background: #fff; color: #111; }
+.scripts-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid #eee; }
+.scripts-title { font-weight: 600; }
+.scripts-body { flex: 1; min-height: 0; display: flex; }
+.file-tree { width: 180px; border-right: 1px solid #eee; display: flex; flex-direction: column; }
+.file-tree-header { padding: 6px; border-bottom: 1px solid #f3f3f3; }
+.file-list { flex: 1; overflow: auto; }
+.file-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; }
+.file-item.active { background: #f5f8ff; }
+.file-name { flex: 1; text-align: left; background: transparent; border: none; color: #111; cursor: pointer; }
+.file-actions .icon { background: transparent; border: none; cursor: pointer; }
+.editor-area { flex: 1; min-width: 0; height: 100%; }
+.btn { padding: 4px 8px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
+.toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #333; }
+.scripts-error { padding: 6px 8px; background: #fff3f3; color: #a10000; border-top: 1px solid #ffd0d0; font-size: 12px; }
+
+
