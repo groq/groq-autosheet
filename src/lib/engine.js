@@ -89,11 +89,7 @@ export class SpreadsheetEngine {
         });
         const fn = this.registry.get(fnName);
         if (!fn) return err(ERROR.NAME, `Unknown function: ${fnName}`);
-        const res = fn(evaluatedArgs, {
-          sheetName,
-          engine: this,
-          registry: this.registry
-        });
+        const res = fn(evaluatedArgs);
         return res;
       }
       case 'BinaryOp': {

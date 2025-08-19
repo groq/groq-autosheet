@@ -1,7 +1,9 @@
+"use client"
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import { SpreadsheetEngine, registerBuiltins } from 'autosheet'
 import { Grid } from './Grid.jsx'
 import ScriptEditor, { loadScriptsFromStorage, saveScriptsToStorage } from './ScriptEditor.jsx'
+import Chat from './Chat.jsx'
 import * as acorn from 'acorn'
 
 export default function App() {
@@ -15,52 +17,144 @@ export default function App() {
   const [activeSheet] = useState('Sheet1')
   const [selection, setSelection] = useState({ row: 1, col: 1 })
   const [gridVersion, setGridVersion] = useState(0)
-  const [viewMode, setViewMode] = useState('split') // 'sheet' | 'scripts' | 'split'
-  const containerRef = useRef(null)
-  const [splitRatio, setSplitRatio] = useState(() => {
-    try {
-      const v = Number(localStorage.getItem('autosheet.splitRatio'))
-      if (!Number.isNaN(v) && v > 0.05 && v < 0.95) return v
-    } catch {}
-    return 0.6
+  // Independent view toggles (initialize from storage immediately on client to avoid flicker/races)
+  const [showSheet, setShowSheet] = useState(() => {
+    try { const ss = localStorage.getItem('autosheet.showSheet'); return ss == null ? true : ss !== 'false' } catch { return true }
   })
-  const splitRatioRef = useRef(splitRatio)
-  useEffect(() => { splitRatioRef.current = splitRatio }, [splitRatio])
+  const [showScripts, setShowScripts] = useState(() => {
+    try { const sp = localStorage.getItem('autosheet.showScripts'); return sp == null ? true : sp !== 'false' } catch { return true }
+  })
+  const [showChat, setShowChat] = useState(() => {
+    try { const sc = localStorage.getItem('autosheet.showChat'); return sc == null ? false : sc !== 'false' } catch { return false }
+  })
+  const containerRef = useRef(null)
+  // Dynamic widths for visible panes (left-to-right: sheet, scripts, chat)
+  const [paneWidths, setPaneWidths] = useState(() => {
+    // Initialize based on prior 2-pane split ratio if available
+    try {
+      const saved = localStorage.getItem('autosheet.paneWidths')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed) && parsed.every((n) => typeof n === 'number')) return parsed
+      }
+    } catch {}
+    try {
+      const r = Number(localStorage.getItem('autosheet.splitRatio'))
+      if (!Number.isNaN(r) && r > 0.05 && r < 0.95) return [r, 1 - r]
+    } catch {}
+    return [0.6, 0.4]
+  })
+  const paneWidthsRef = useRef(paneWidths)
+  useEffect(() => { paneWidthsRef.current = paneWidths }, [paneWidths])
 
-  const clampAndSetSplitRatio = useCallback((ratio) => {
-    const el = containerRef.current
-    const minSheet = 320
-    const minEditor = 280
-    if (el && el.clientWidth > 0) {
-      const minR = minSheet / el.clientWidth
-      const maxR = 1 - (minEditor / el.clientWidth)
-      ratio = Math.min(Math.max(ratio, minR), maxR)
-    } else {
-      ratio = Math.min(Math.max(ratio, 0.1), 0.9)
-    }
-    setSplitRatio(ratio)
-    try { localStorage.setItem('autosheet.splitRatio', String(ratio)) } catch {}
+  const getVisiblePanes = useCallback(() => {
+    const panes = []
+    if (showSheet) panes.push('sheet')
+    if (showScripts) panes.push('scripts')
+    if (showChat) panes.push('chat')
+    return panes
+  }, [showSheet, showScripts, showChat])
+
+  const getMinWidthPx = useCallback((pane) => {
+    if (pane === 'sheet') return 320
+    if (pane === 'scripts') return 280
+    if (pane === 'chat') return 280
+    return 240
   }, [])
+
+  const clampAndSetPaneWidths = useCallback((widths) => {
+    const el = containerRef.current
+    const panes = getVisiblePanes()
+    const RESIZER_PX = 6
+    if (!el || el.clientWidth <= 0) {
+      const normalized = (() => {
+        const clamped = widths.map((w) => (Number.isFinite(w) ? Math.min(Math.max(w, 0.05), 0.95) : 0))
+        const sum = clamped.reduce((a, b) => a + b, 0) || 1
+        return clamped.map((w) => w / sum)
+      })()
+      setPaneWidths(normalized)
+      try { localStorage.setItem('autosheet.paneWidths', JSON.stringify(normalized)) } catch {}
+      return
+    }
+    const resizerTotalPx = Math.max(0, (panes.length - 1) * RESIZER_PX)
+    const totalPx = Math.max(1, el.clientWidth - resizerTotalPx)
+    const minRatios = panes.map((p) => getMinWidthPx(p) / totalPx)
+
+    // If minimums cannot all fit, scale them proportionally to fill available space
+    const minSum = minRatios.reduce((a, b) => a + b, 0)
+    if (minSum >= 1) {
+      const scaled = minRatios.map((r) => (r / minSum))
+      setPaneWidths(scaled)
+      try { localStorage.setItem('autosheet.paneWidths', JSON.stringify(scaled)) } catch {}
+      return
+    }
+
+    // Start with provided widths (normalized) or equal distribution
+    let adjusted = (() => {
+      const src = widths.length === panes.length ? widths.slice() : Array.from({ length: panes.length }, () => 1 / panes.length)
+      const safe = src.map((w) => (Number.isFinite(w) ? Math.max(w, 0) : 0))
+      const sum = safe.reduce((a, b) => a + b, 0) || 1
+      return safe.map((w) => w / sum)
+    })()
+
+    // Ensure minimums by redistributing from others proportionally
+    for (let i = 0; i < adjusted.length; i++) {
+      if (adjusted[i] < minRatios[i]) {
+        const deficit = minRatios[i] - adjusted[i]
+        let pool = 0
+        for (let j = 0; j < adjusted.length; j++) if (j !== i) pool += Math.max(0, adjusted[j] - minRatios[j])
+        if (pool > 0) {
+          for (let j = 0; j < adjusted.length; j++) {
+            if (j === i) continue
+            const avail = Math.max(0, adjusted[j] - minRatios[j])
+            const take = (avail / pool) * deficit
+            adjusted[j] -= take
+            adjusted[i] += take
+          }
+        } else {
+          // No pool to borrow from; fallback to minimums and renormalize later
+          adjusted[i] = minRatios[i]
+        }
+      }
+    }
+    const sum = adjusted.reduce((a, b) => a + b, 0) || 1
+    adjusted = adjusted.map((w) => w / sum)
+    setPaneWidths(adjusted)
+    try { localStorage.setItem('autosheet.paneWidths', JSON.stringify(adjusted)) } catch {}
+  }, [getMinWidthPx, getVisiblePanes])
 
   useEffect(() => {
     const onResize = () => {
-      clampAndSetSplitRatio(splitRatioRef.current)
+      clampAndSetPaneWidths(paneWidthsRef.current)
     }
     window.addEventListener('resize', onResize)
     // Initial clamp after first paint
-    setTimeout(() => clampAndSetSplitRatio(splitRatioRef.current), 0)
+    setTimeout(() => clampAndSetPaneWidths(paneWidthsRef.current), 0)
     return () => window.removeEventListener('resize', onResize)
-  }, [clampAndSetSplitRatio])
+  }, [clampAndSetPaneWidths])
 
-  const beginSplitDrag = useCallback((e) => {
+  const beginResizeDrag = useCallback((e, index) => {
     e.preventDefault()
     const el = containerRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
+    const startX = e.clientX
+    const startWidths = paneWidthsRef.current.slice()
+    const panes = getVisiblePanes()
+    const RESIZER_PX = 6
+    const totalPx = Math.max(1, rect.width - (panes.length - 1) * RESIZER_PX)
+    const minRatios = panes.map((p) => getMinWidthPx(p) / totalPx)
+
     const onMove = (ev) => {
-      const x = ev.clientX - rect.left
-      const r = x / rect.width
-      clampAndSetSplitRatio(r)
+      const deltaPx = ev.clientX - startX
+      const delta = deltaPx / totalPx
+      const leftMaxShrink = startWidths[index] - minRatios[index]
+      const rightMaxShrink = startWidths[index + 1] - minRatios[index + 1]
+      const clampedDelta = Math.max(-leftMaxShrink, Math.min(delta, rightMaxShrink))
+      const next = startWidths.slice()
+      next[index] += clampedDelta
+      next[index + 1] -= clampedDelta
+      clampAndSetPaneWidths(next)
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
@@ -68,7 +162,63 @@ export default function App() {
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [clampAndSetSplitRatio])
+  }, [clampAndSetPaneWidths, getMinWidthPx, getVisiblePanes])
+
+  // Persist toggles: handled inline in togglePane to avoid double-writes/races
+
+  const togglePane = useCallback((pane) => {
+    const visible = getVisiblePanes()
+    const isLast = visible.length === 1 && visible[0] === pane
+    if (isLast) return // prevent hiding all
+    if (pane === 'sheet') {
+      setShowSheet((prev) => {
+        const next = !prev
+        try { localStorage.setItem('autosheet.showSheet', String(next)) } catch {}
+        return next
+      })
+      return
+    }
+    if (pane === 'scripts') {
+      setShowScripts((prev) => {
+        const next = !prev
+        try { localStorage.setItem('autosheet.showScripts', String(next)) } catch {}
+        return next
+      })
+      return
+    }
+    if (pane === 'chat') {
+      setShowChat((prev) => {
+        const next = !prev
+        try { localStorage.setItem('autosheet.showChat', String(next)) } catch {}
+        return next
+      })
+      return
+    }
+  }, [getVisiblePanes])
+
+  // When visible panes change, adjust paneWidths length and distribution
+  useEffect(() => {
+    const visible = getVisiblePanes()
+    if (visible.length === paneWidthsRef.current.length) return
+    let widths = paneWidthsRef.current.slice()
+    if (visible.length < widths.length) {
+      // Remove extra widths by merging proportionally into remaining
+      const keep = widths.slice(0, visible.length)
+      const drop = widths.slice(visible.length).reduce((a, b) => a + b, 0)
+      const sumKeep = keep.reduce((a, b) => a + b, 0) || 1
+      widths = keep.map((w) => w + (w / sumKeep) * drop)
+    } else {
+      // Add new panes with a small share, renormalize
+      const addCount = visible.length - widths.length
+      const extra = 0.25
+      for (let i = 0; i < addCount; i++) widths.push(extra)
+      const sum = widths.reduce((a, b) => a + b, 0)
+      widths = widths.map((w) => w / sum)
+    }
+    // Defer clamping to the next frame so container measurements are up to date
+    const id = window.requestAnimationFrame(() => clampAndSetPaneWidths(widths))
+    return () => window.cancelAnimationFrame(id)
+  }, [showSheet, showScripts, showChat, clampAndSetPaneWidths, getVisiblePanes])
 
   // Script editor state
   const [scripts, setScripts] = useState(() => loadScriptsFromStorage())
@@ -115,10 +265,16 @@ export default function App() {
       // Evaluate and stage functions into a fresh registry (atomic swap on success)
       const exportList = fnNames.map((n) => `${n}: typeof ${n} !== 'undefined' ? ${n} : undefined`).join(', ')
       const wrapper = `"use strict";\n${combined}\n;return { ${exportList} };`
-      const bag = Function(wrapper)()
       const NewRegistryClass = engine.registry.constructor
       const newRegistry = new NewRegistryClass()
       registerBuiltins(newRegistry)
+      // Build BUILTINS helper for user scripts to call built-in spreadsheet functions directly
+      const builtinsHelper = {}
+      for (const name of newRegistry.names()) {
+        if (name === 'BUILTINS') continue
+        builtinsHelper[name] = (...fnArgs) => newRegistry.get(name)(fnArgs)
+      }
+      const bag = Function('BUILTINS', wrapper)(builtinsHelper)
       for (const name of fnNames) {
         const fn = bag[name]
         if (typeof fn === 'function') newRegistry.register(name, fn)
@@ -153,56 +309,72 @@ export default function App() {
         <div className="title">Autosheet</div>
         <div style={{ flex: 1 }} />
         <div className="tabs">
-          <button className={viewMode === 'sheet' ? 'tab active' : 'tab'} onClick={() => setViewMode('sheet')}>Sheet</button>
-          <button className={viewMode === 'scripts' ? 'tab active' : 'tab'} onClick={() => setViewMode('scripts')}>Scripts</button>
-          <button className={viewMode === 'split' ? 'tab active' : 'tab'} onClick={() => setViewMode('split')}>Split</button>
+          <button className={showSheet ? 'tab active' : 'tab'} onClick={() => togglePane('sheet')}>Sheet</button>
+          <button className={showScripts ? 'tab active' : 'tab'} onClick={() => togglePane('scripts')}>Scripts</button>
+          <button className={showChat ? 'tab active' : 'tab'} onClick={() => togglePane('chat')}>Chat</button>
         </div>
       </div>
-      {(viewMode === 'sheet' || viewMode === 'split') && (
-        <FormulaBar
-          selection={selection}
-          getCellRaw={getCellRaw}
-          onSubmit={(text) => setCell(selection.row, selection.col, normalizeInput(text))}
-        />
-      )}
-      <div className={viewMode === 'split' ? 'main split' : 'main'} ref={containerRef}>
-        {(viewMode === 'sheet' || viewMode === 'split') && (
-          <div className="sheet-pane" style={viewMode === 'split' ? { width: `${splitRatio * 100}%` } : undefined}>
-            <Grid
-              rows={20}
-              cols={10}
-              selection={selection}
-              setSelection={setSelection}
-              getCellDisplay={getCellDisplay}
-              getCellRaw={getCellRaw}
-              onEdit={(r, c, text) => setCell(r, c, normalizeInput(text))}
-            />
-          </div>
-        )}
-        {viewMode === 'split' && (
-          <div
-            className="split-resizer"
-            onMouseDown={beginSplitDrag}
-            title="Drag to resize"
-            onDoubleClick={() => clampAndSetSplitRatio(0.6)}
-          />
-        )}
-        {(viewMode === 'scripts' || viewMode === 'split') && (
-          <div className="editor-pane" style={viewMode === 'split' ? { width: `${(1 - splitRatio) * 100}%` } : undefined}>
-            <ScriptEditor
-              scripts={scripts}
-              setScripts={setScripts}
-              activeId={activeScriptId}
-              setActiveId={setActiveScriptId}
-              onChangeContent={handleScriptsChange}
-              onBlurContent={handleScriptsBlur}
-              liveReload={liveReload}
-              setLiveReload={setLiveReload}
-              error={scriptError}
-              onReloadNow={() => compileAndRegisterScripts(scripts)}
-            />
-          </div>
-        )}
+      
+      <div className="main" ref={containerRef}>
+        {(() => {
+          const panes = getVisiblePanes()
+          const resizerTotalPx = (panes.length - 1) * 6
+          return panes.map((pane, idx) => (
+          <React.Fragment key={pane}>
+            <div
+              className="pane"
+              style={{ flex: `0 0 calc((100% - ${resizerTotalPx}px) * ${(paneWidths[idx] || (1 / panes.length))})` }}
+            >
+              {pane === 'sheet' && (
+                <>
+                  <FormulaBar
+                    selection={selection}
+                    getCellRaw={getCellRaw}
+                    onSubmit={(text) => setCell(selection.row, selection.col, normalizeInput(text))}
+                  />
+                  <Grid
+                    rows={100}
+                    cols={26}
+                    selection={selection}
+                    setSelection={setSelection}
+                    getCellDisplay={getCellDisplay}
+                    getCellRaw={getCellRaw}
+                    onEdit={(r, c, text) => setCell(r, c, normalizeInput(text))}
+                  />
+                </>
+              )}
+              {pane === 'scripts' && (
+                <ScriptEditor
+                  scripts={scripts}
+                  setScripts={setScripts}
+                  activeId={activeScriptId}
+                  setActiveId={setActiveScriptId}
+                  onChangeContent={handleScriptsChange}
+                  onBlurContent={handleScriptsBlur}
+                  liveReload={liveReload}
+                  setLiveReload={setLiveReload}
+                  error={scriptError}
+                  onReloadNow={() => compileAndRegisterScripts(scripts)}
+                />
+              )}
+              {pane === 'chat' && (
+                <Chat
+                  engine={engine}
+                  activeSheet={activeSheet}
+                  onEngineMutated={() => setGridVersion((v) => v + 1)}
+                />
+              )}
+            </div>
+            {idx < panes.length - 1 && (
+              <div
+                className="split-resizer"
+                onMouseDown={(e) => beginResizeDrag(e, idx)}
+                title="Drag to resize"
+              />
+            )}
+          </React.Fragment>
+          ))
+        })()}
       </div>
     </div>
   )

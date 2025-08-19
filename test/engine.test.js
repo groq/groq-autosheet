@@ -60,14 +60,12 @@ describe('SpreadsheetEngine', () => {
     expect(engine.evaluateCell('S', 'A4')).toBe('abc');
   });
 
-  it('supports custom functions calling built-ins', () => {
+  it('supports custom functions calling built-ins without ctx', () => {
     const engine = new SpreadsheetEngine();
     registerBuiltins(engine.registry);
     engine.addSheet('S');
-    engine.registerFunction('MYCUSTOMFUNCTION', (args, { registry }) => {
-      const SUM = registry.get('SUM');
-      return SUM(args) * -1;
-    });
+    const SUM = engine.registry.get('SUM');
+    engine.registerFunction('MYCUSTOMFUNCTION', (args) => SUM(args) * -1);
     engine.setCell('S', 'B1', 5);
     engine.setCell('S', 'B2', '=MYCUSTOMFUNCTION(1, B1)');
     expect(engine.evaluateCell('S', 'B2')).toBe(-6);

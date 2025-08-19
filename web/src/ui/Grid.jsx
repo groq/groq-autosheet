@@ -1,3 +1,4 @@
+"use client"
 import React, { useRef, useEffect, useState } from 'react'
 
 export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getCellRaw, onEdit }) {
@@ -10,8 +11,8 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
   const [selectionRect, setSelectionRect] = useState(null)
 
   const DEFAULT_COL_WIDTH = 100
-  const DEFAULT_ROW_HEIGHT = 28
-  const ROW_HEADER_WIDTH = 48
+  const DEFAULT_ROW_HEIGHT = 22
+  const ROW_HEADER_WIDTH = 40
 
   const [colWidths, setColWidths] = useState(() => Array.from({ length: cols }, () => DEFAULT_COL_WIDTH))
   const [rowHeights, setRowHeights] = useState(() => Array.from({ length: rows }, () => DEFAULT_ROW_HEIGHT))
@@ -74,6 +75,7 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
       // Ignore grid navigation when typing inside an input
       if (e.target && e.target.tagName === 'INPUT') return
       let { row, col, focus } = selection
+      const isMeta = e.metaKey || (e.ctrlKey && !e.shiftKey && !e.altKey)
       if (e.key === 'Enter') {
         e.preventDefault()
         const raw = getCellRaw ? getCellRaw(row, col) : ''
@@ -133,6 +135,69 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
         const nextCol = Math.max(1, Math.min(cols, col + dc))
         setSelection({ row: nextRow, col: nextCol })
       }
+      const isNonEmpty = (r, c) => {
+        if (!getCellRaw) return false
+        const v = getCellRaw(r, c)
+        return v != null && String(v) !== ''
+      }
+      const jumpHorizontal = (dir) => {
+        if (dir > 0) {
+          const next = col + 1
+          if (next <= cols && isNonEmpty(row, next)) {
+            // Move to the end of the contiguous non-empty block to the right
+            let c = next
+            while (c + 1 <= cols && isNonEmpty(row, c + 1)) c++
+            setSelection({ row, col: c })
+            return
+          }
+          // Otherwise, move to the next non-empty cell; if none, to the last column
+          let c = next
+          while (c <= cols && !isNonEmpty(row, c)) c++
+          setSelection({ row, col: c <= cols ? c : cols })
+        } else {
+          const prev = col - 1
+          if (prev >= 1 && isNonEmpty(row, prev)) {
+            // Move to the start of the contiguous non-empty block to the left
+            let c = prev
+            while (c - 1 >= 1 && isNonEmpty(row, c - 1)) c--
+            setSelection({ row, col: c })
+            return
+          }
+          // Otherwise, move to the previous non-empty cell; if none, to the first column
+          let c = prev
+          while (c >= 1 && !isNonEmpty(row, c)) c--
+          setSelection({ row, col: c >= 1 ? c : 1 })
+        }
+      }
+      const jumpVertical = (dir) => {
+        if (dir > 0) {
+          const next = row + 1
+          if (next <= rows && isNonEmpty(next, col)) {
+            // Move to the end of the contiguous non-empty block downward
+            let r = next
+            while (r + 1 <= rows && isNonEmpty(r + 1, col)) r++
+            setSelection({ row: r, col })
+            return
+          }
+          // Otherwise, move to the next non-empty cell; if none, to the last row
+          let r = next
+          while (r <= rows && !isNonEmpty(r, col)) r++
+          setSelection({ row: r <= rows ? r : rows, col })
+        } else {
+          const prev = row - 1
+          if (prev >= 1 && isNonEmpty(prev, col)) {
+            // Move to the start of the contiguous non-empty block upward
+            let r = prev
+            while (r - 1 >= 1 && isNonEmpty(r - 1, col)) r--
+            setSelection({ row: r, col })
+            return
+          }
+          // Otherwise, move to the previous non-empty cell; if none, to the first row
+          let r = prev
+          while (r >= 1 && !isNonEmpty(r, col)) r--
+          setSelection({ row: r >= 1 ? r : 1, col })
+        }
+      }
       const expand = (dr, dc) => {
         const base = { row, col }
         const cur = focus && (focus.row || focus.col) ? focus : base
@@ -144,25 +209,29 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault()
-        if (e.shiftKey) expand(-1, 0)
+        if (isMeta) jumpVertical(-1)
+        else if (e.shiftKey) expand(-1, 0)
         else if (hasRange) move(-1, 0)
         else move(-1, 0)
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        if (e.shiftKey) expand(1, 0)
+        if (isMeta) jumpVertical(1)
+        else if (e.shiftKey) expand(1, 0)
         else if (hasRange) move(1, 0)
         else move(1, 0)
       }
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
-        if (e.shiftKey) expand(0, -1)
+        if (isMeta) jumpHorizontal(-1)
+        else if (e.shiftKey) expand(0, -1)
         else if (hasRange) move(0, -1)
         else move(0, -1)
       }
       if (e.key === 'ArrowRight') {
         e.preventDefault()
-        if (e.shiftKey) expand(0, 1)
+        if (isMeta) jumpHorizontal(1)
+        else if (e.shiftKey) expand(0, 1)
         else if (hasRange) move(0, 1)
         else move(0, 1)
       }
@@ -170,6 +239,57 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
     el.addEventListener('keydown', handleKey)
     return () => el.removeEventListener('keydown', handleKey)
   }, [selection, setSelection, rows, cols, getCellRaw, onEdit])
+
+  // Keep active cell in view when selection changes
+  useEffect(() => {
+    const gridEl = tableRef.current
+    if (!gridEl) return
+    const { row, col } = selection || {}
+    if (!row || !col) return
+    const cell = gridEl.querySelector(`td[data-r="${row}"][data-c="${col}"]`)
+    if (!cell) return
+
+    const gridRect = gridEl.getBoundingClientRect()
+    const cellRect = cell.getBoundingClientRect()
+
+    // Compute cell coordinates relative to the scrollable content space
+    const cellTop = cellRect.top - gridRect.top + gridEl.scrollTop
+    const cellBottom = cellRect.bottom - gridRect.top + gridEl.scrollTop
+    const cellLeft = cellRect.left - gridRect.left + gridEl.scrollLeft
+    const cellRight = cellRect.right - gridRect.left + gridEl.scrollLeft
+
+    // Measure sticky header sizes
+    const thead = gridEl.querySelector('thead')
+    const headerHeight = thead ? thead.getBoundingClientRect().height : 0
+    const rowHeaderWidth = ROW_HEADER_WIDTH
+
+    // Visible bounds for body cells considering sticky regions
+    const visibleTop = gridEl.scrollTop + headerHeight
+    const visibleLeft = gridEl.scrollLeft + rowHeaderWidth
+    const visibleBottom = gridEl.scrollTop + gridEl.clientHeight
+    const visibleRight = gridEl.scrollLeft + gridEl.clientWidth
+
+    let nextScrollTop = gridEl.scrollTop
+    let nextScrollLeft = gridEl.scrollLeft
+
+    // Vertical adjustment
+    if (cellTop < visibleTop) {
+      nextScrollTop = Math.max(0, cellTop - headerHeight)
+    } else if (cellBottom > visibleBottom) {
+      nextScrollTop = Math.max(0, cellBottom - gridEl.clientHeight)
+    }
+
+    // Horizontal adjustment
+    if (cellLeft < visibleLeft) {
+      nextScrollLeft = Math.max(0, cellLeft - rowHeaderWidth)
+    } else if (cellRight > visibleRight) {
+      nextScrollLeft = Math.max(0, cellRight - gridEl.clientWidth)
+    }
+
+    if (nextScrollTop !== gridEl.scrollTop || nextScrollLeft !== gridEl.scrollLeft) {
+      gridEl.scrollTo({ top: nextScrollTop, left: nextScrollLeft })
+    }
+  }, [selection, rowHeights, colWidths])
 
   // End selection drag on global mouseup
   useEffect(() => {
@@ -342,9 +462,9 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
         </colgroup>
         <thead>
           <tr>
-            <th style={{ width: ROW_HEADER_WIDTH }}></th>
+            <th className="corner-cell" style={{ width: ROW_HEADER_WIDTH }}></th>
             {Array.from({ length: cols }, (_, c) => (
-              <th key={c} style={{ position: 'relative' }}>
+              <th key={c} className="col-header">
                 <span className="col-header-label">{colLabel(c + 1)}</span>
                 <div
                   className="col-resizer"
@@ -366,7 +486,7 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
         <tbody>
           {Array.from({ length: rows }, (_, r) => (
             <tr key={r} style={{ height: rowHeights[r] }}>
-              <th style={{ position: 'relative', width: ROW_HEADER_WIDTH }}>
+              <th className="row-header" style={{ width: ROW_HEADER_WIDTH }}>
                 {r + 1}
                 <div
                   className="row-resizer"
@@ -403,6 +523,10 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
                     data-r={rr}
                     data-c={cc}
                     onMouseDown={(e) => {
+                      // If clicking inside the active input, allow caret placement and do not exit editing
+                      if (isEditing && e.target && e.target.tagName === 'INPUT') {
+                        return
+                      }
                       e.preventDefault()
                       if (e.shiftKey) {
                         // Expand from existing anchor to this cell
@@ -431,6 +555,8 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
                         autoFocus
                         value={editValue}
                         onChange={(e) => setEditValue(e.target.value)}
+                        onMouseDown={(e) => { e.stopPropagation() }}
+                        onDoubleClick={(e) => { e.stopPropagation() }}
                         onKeyDown={(e) => {
                           e.stopPropagation()
                           if (e.key === 'Enter') {
@@ -445,7 +571,7 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
                           }
                         }}
                         onBlur={() => commitEditing(rr, cc, editValue)}
-                        style={{ width: '100%', height: '100%', boxSizing: 'border-box', border: 'none', outline: 'none', font: 'inherit', padding: 0, margin: 0 }}
+                        style={{ width: '100%', height: '100%', boxSizing: 'border-box', border: 'none', outline: 'none', font: 'inherit', padding: '0 1px', margin: 0 }}
                       />
                     ) : (
                       <div className="cell-display"><span className="cell-text">{getCellDisplay(rr, cc)}</span></div>

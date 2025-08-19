@@ -109,12 +109,12 @@ export function registerBuiltins(registry) {
   });
 
   // Basic wrappers to call built-ins from user JS conveniently
-  registry.register('BUILTINS', (_args, { registry }) => {
+  registry.register('BUILTINS', (_args) => {
     // Returns a helper object exposing built-ins by name
     const helper = {};
     for (const name of registry.names()) {
       if (name === 'BUILTINS') continue;
-      helper[name] = (...fnArgs) => registry.get(name)(fnArgs, { registry });
+      helper[name] = (...fnArgs) => registry.get(name)(fnArgs);
     }
     return helper;
   });

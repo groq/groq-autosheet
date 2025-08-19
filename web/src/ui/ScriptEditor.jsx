@@ -1,3 +1,4 @@
+"use client"
 import React, { useMemo, useState, useEffect, useCallback } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { javascript } from '@codemirror/lang-javascript'
@@ -16,7 +17,7 @@ export function loadScriptsFromStorage() {
     {
       id: crypto.randomUUID(),
       name: 'script1.js',
-      content: defaultTemplate()
+      content: initialTemplate()
     }
   ]
 }
@@ -36,6 +37,9 @@ export default function ScriptEditor({ scripts, setScripts, activeId, setActiveI
 
   useEffect(() => {
     if (!active && scripts.length > 0) setActiveId(scripts[0].id)
+    if (scripts.length === 0) {
+      try { localStorage.removeItem(STORAGE_KEY) } catch {}
+    }
   }, [active, scripts, setActiveId])
 
   const addFile = useCallback(() => {
@@ -44,7 +48,7 @@ export default function ScriptEditor({ scripts, setScripts, activeId, setActiveI
     let name = `${base}${i}.js`
     const used = new Set(scripts.map((s) => s.name))
     while (used.has(name)) { i++; name = `${base}${i}.js` }
-    const next = { id: crypto.randomUUID(), name, content: defaultTemplate() }
+    const next = { id: crypto.randomUUID(), name, content: scripts.length === 0 ? initialTemplate() : helperTextTemplate() }
     const arr = [...scripts, next]
     setScripts(arr)
     saveScriptsToStorage(arr)
@@ -52,16 +56,23 @@ export default function ScriptEditor({ scripts, setScripts, activeId, setActiveI
   }, [scripts, setScripts, setActiveId])
 
   const removeFile = useCallback((id) => {
-    if (scripts.length <= 1) return
     const idx = scripts.findIndex((s) => s.id === id)
     if (idx === -1) return
     const file = scripts[idx]
     const ok = window.confirm(`Delete ${file.name}? This cannot be undone.`)
     if (!ok) return
-    const arr = scripts.filter((s) => s.id !== id)
+    let arr = scripts.filter((s) => s.id !== id)
+    if (arr.length === 0) {
+      // Return to clean state with no scripts; next add will recreate initial example
+      arr = []
+    }
     setScripts(arr)
     saveScriptsToStorage(arr)
-    if (activeId === id) setActiveId(arr[Math.max(0, idx - 1)].id)
+    if (arr.length === 0) {
+      setActiveId(null)
+    } else if (activeId === id) {
+      setActiveId(arr[Math.max(0, idx - 1)].id)
+    }
   }, [scripts, activeId, setScripts, setActiveId])
 
   const startRename = useCallback((id) => setRenamingId(id), [])
@@ -136,13 +147,19 @@ export default function ScriptEditor({ scripts, setScripts, activeId, setActiveI
   )
 }
 
-function defaultTemplate() {
+function helperTextTemplate() {
   return `// Custom functions guide
-// - Define top-level functions: function Name(args, ctx) { ... }
+// - Define top-level functions: function Name(args) { ... }
 // - They become available in formulas by name; names starting with '_' are ignored.
 // - args: array of evaluated arguments from the cell formula
-// - ctx: { sheetName, engine, registry }
-// Example:
+// - Use built-ins via the BUILTINS helper injected into your script's scope.
+//   Example: function DoubleSum(args) { return BUILTINS.SUM(args) * 2 }
+`
+}
+
+function initialTemplate() {
+  return `${helperTextTemplate()}
+// Example function:
 function Abc(args) {
   const x = Number(args?.[0] ?? 0)
   return x + 1
