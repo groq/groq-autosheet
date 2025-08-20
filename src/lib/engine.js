@@ -13,6 +13,11 @@ export class SpreadsheetEngine {
   constructor() {
     this.sheets = new Map(); // sheetName -> Map(cellAddrUpper -> value or formula string)
     this.registry = new BuiltinRegistry();
+    // Built-in async/cached helpers (e.g., AI())
+    this._aiCache = new Map(); // prompt(string) -> value(string)
+    this._aiInFlight = new Map(); // prompt -> Promise
+    this.onAsyncChange = null; // optional callback when async state updates
+    this._aiFetcher = defaultAiFetcher; // overridable fetcher
   }
 
   addSheet(sheetName = 'Sheet1') {
@@ -52,13 +57,18 @@ export class SpreadsheetEngine {
 
     const raw = this.getCell(resolvedSheet, normalized);
     let result;
-    if (typeof raw === 'string' && raw.startsWith('=')) {
-      const ast = parseFormula(raw.slice(1));
-      result = this.evaluateAst(resolvedSheet, ast, visiting);
-    } else {
-      result = raw;
+    try {
+      if (typeof raw === 'string' && raw.startsWith('=')) {
+        const ast = parseFormula(raw.slice(1));
+        result = this.evaluateAst(resolvedSheet, ast, visiting);
+      } else {
+        result = raw;
+      }
+    } catch (e) {
+      result = err(ERROR.VALUE, String(e && (e.message || e)));
+    } finally {
+      visiting.delete(key);
     }
-    visiting.delete(key);
     return result;
   }
 
@@ -89,8 +99,13 @@ export class SpreadsheetEngine {
         });
         const fn = this.registry.get(fnName);
         if (!fn) return err(ERROR.NAME, `Unknown function: ${fnName}`);
-        const res = fn(evaluatedArgs);
-        return res;
+        try {
+          // Pass engine as second argument for built-ins that need context (e.g., AI())
+          const res = fn(evaluatedArgs, this);
+          return res;
+        } catch (e) {
+          return err(ERROR.VALUE, `Function ${fnName} error: ${String(e && (e.message || e))}`);
+        }
       }
       case 'BinaryOp': {
         const leftVal = this.evaluateAst(sheetName, node.left, visiting);
@@ -111,6 +126,111 @@ export class SpreadsheetEngine {
       default:
         return err(ERROR.VALUE, 'Unknown AST node: ' + node.type);
     }
+  }
+
+  // Range APIs
+  getRange(sheetName, rangeStr, mode = 'computed') {
+    const { sheet, start, end, rowsMin, rowsMax, colsMin, colsMax } = parseRangeRef(rangeStr, sheetName);
+    const matrix = [];
+    for (let r = rowsMin; r <= rowsMax; r++) {
+      const rowArr = [];
+      for (let c = colsMin; c <= colsMax; c++) {
+        const address = rowColToA1(r, c);
+        const cell = { address };
+        if (mode === 'raw' || mode === 'both') cell.raw = this.getCell(sheet, address);
+        if (mode === 'computed' || mode === 'both') cell.computed = this.evaluateCell(sheet, address);
+        rowArr.push(cell);
+      }
+      matrix.push(rowArr);
+    }
+    return {
+      sheet,
+      range: `${rowColToA1(rowsMin, colsMin)}:${rowColToA1(rowsMax, colsMax)}`,
+      rows: matrix,
+    };
+  }
+
+  setRange(sheetName, rangeStr, values) {
+    if (!Array.isArray(values) || values.length === 0 || !values.every((row) => Array.isArray(row))) {
+      throw new Error('values must be a non-empty 2D array');
+    }
+    const { sheet, start, end, rowsMin, rowsMax, colsMin, colsMax } = parseRangeRef(rangeStr, sheetName);
+    const rowCount = rowsMax - rowsMin + 1;
+    const colCount = colsMax - colsMin + 1;
+    if (values.length !== rowCount || values.some((row) => row.length !== colCount)) {
+      const providedCols = values[0] ? values[0].length : 0;
+      throw new Error(`values shape ${values.length}x${providedCols} does not match range size ${rowCount}x${colCount}`);
+    }
+
+    for (let i = 0; i < rowCount; i++) {
+      for (let j = 0; j < colCount; j++) {
+        const r = rowsMin + i;
+        const c = colsMin + j;
+        const address = rowColToA1(r, c);
+        this.setCell(sheet, address, values[i][j]);
+      }
+    }
+
+    const resultRows = [];
+    for (let i = 0; i < rowCount; i++) {
+      const rowArr = [];
+      for (let j = 0; j < colCount; j++) {
+        const r = rowsMin + i;
+        const c = colsMin + j;
+        const address = rowColToA1(r, c);
+        rowArr.push({ address, raw: this.getCell(sheet, address), computed: this.evaluateCell(sheet, address) });
+      }
+      resultRows.push(rowArr);
+    }
+
+    return {
+      ok: true,
+      sheet,
+      range: `${rowColToA1(rowsMin, colsMin)}:${rowColToA1(rowsMax, colsMax)}`,
+      rows: resultRows,
+    };
+  }
+
+  // ===== AI cache/fetch helpers =====
+  setAiFetcher(fetcherFn) {
+    if (typeof fetcherFn === 'function') this._aiFetcher = fetcherFn;
+  }
+
+  getAiCached(prompt) {
+    const key = String(prompt || '');
+    return this._aiCache.has(key) ? this._aiCache.get(key) : undefined;
+  }
+
+  hasAiCached(prompt) {
+    const key = String(prompt || '');
+    return this._aiCache.has(key);
+  }
+
+  async _fetchAndCacheAi(prompt) {
+    const key = String(prompt || '');
+    if (this._aiInFlight.has(key)) return this._aiInFlight.get(key);
+    const p = (async () => {
+      try {
+        const val = await this._aiFetcher(key);
+        this._aiCache.set(key, val == null ? '' : String(val));
+      } catch (e) {
+        // Store an error string so subsequent evaluations are stable
+        this._aiCache.set(key, String(e && (e.message || e)));
+      } finally {
+        this._aiInFlight.delete(key);
+        if (typeof this.onAsyncChange === 'function') {
+          try { this.onAsyncChange({ type: 'AI_CACHE_UPDATED', prompt: key }); } catch {}
+        }
+      }
+    })();
+    this._aiInFlight.set(key, p);
+    return p;
+  }
+
+  requestAi(prompt) {
+    const key = String(prompt || '');
+    if (this._aiCache.has(key) || this._aiInFlight.has(key)) return;
+    void this._fetchAndCacheAi(key);
   }
 }
 
@@ -181,6 +301,40 @@ export function qualifyIfNeeded(address, defaultSheet) {
   return `${defaultSheet}!${address}`;
 }
 
+// Parses ranges like "A1:C3" or "Sheet1!A1:C3".
+// Returns normalized sheet name and numeric bounds for iteration.
+function parseRangeRef(rangeStr, defaultSheet) {
+  const input = String(rangeStr).trim();
+  if (!input) throw new Error('Missing range');
+
+  let sheet = defaultSheet;
+  let startStr;
+  let endStr;
+  const sheetMatch = /^([^!]+)!([^:]+):([^:]+)$/.exec(input);
+  if (sheetMatch) {
+    sheet = sheetMatch[1];
+    startStr = sheetMatch[2];
+    endStr = sheetMatch[3];
+  } else {
+    const parts = input.split(':');
+    if (parts.length !== 2) throw new Error('Invalid range (expected A1:B2)');
+    startStr = parts[0].trim();
+    endStr = parts[1].trim();
+  }
+
+  const { addr: start } = normalizeAddress(startStr, sheet);
+  const { addr: end } = normalizeAddress(endStr, sheet);
+
+  const { row: r1, col: c1 } = a1ToRowCol(start);
+  const { row: r2, col: c2 } = a1ToRowCol(end);
+  const rowsMin = Math.min(r1, r2);
+  const rowsMax = Math.max(r1, r2);
+  const colsMin = Math.min(c1, c2);
+  const colsMax = Math.max(c1, c2);
+
+  return { sheet, start, end, rowsMin, rowsMax, colsMin, colsMax };
+}
+
 function coerceNumber(v) {
   if (typeof v === 'number') return v;
   if (v == null) return NaN;
@@ -191,4 +345,41 @@ function coerceNumber(v) {
   return NaN;
 }
 
+
+// Default AI fetcher: calls the app's Groq proxy using the same model as Chat settings
+async function defaultAiFetcher(prompt) {
+  // Attempt to read model from localStorage when in browser
+  let model = 'openai/gpt-oss-20b';
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const m = window.localStorage.getItem('autosheet.chat.model');
+      if (m) model = m;
+    }
+  } catch {}
+
+  if (typeof fetch !== 'function') {
+    throw new Error('fetch unavailable for AI');
+  }
+  const base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
+  const url = (base ? base : '') + '/api/groq/openai/v1/chat/completions';
+  const body = {
+    model,
+    messages: [
+      { role: 'system', content: 'You are asked to produce a value output that will be rendered directly in the cell of a spreadsheet so keep it brief.' },
+      { role: 'user', content: String(prompt || '') },
+    ],
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error('AI request failed: ' + res.status + (txt ? ' ' + txt : ''));
+  }
+  const json = await res.json();
+  const content = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+  return content == null ? '' : String(content);
+}
 

@@ -40,6 +40,35 @@ const MODEL_STORAGE_KEY = 'autosheet.chat.model'
 const MCP_SERVERS_STORAGE_KEY = 'autosheet.mcp.servers'
 // Transport is per-server; stored on each item in MCP_SERVERS_STORAGE_KEY
 // Multiple MCP servers supported
+const CHATS_STORAGE_KEY = 'autosheet.chats.v1'
+const ACTIVE_CHAT_ID_STORAGE_KEY = 'autosheet.chats.activeId'
+
+function createNewChat(title) {
+  const id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(16) + Math.random().toString(16).slice(2))
+  return {
+    id,
+    title: title || 'New chat',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: [],
+  }
+}
+
+function getNextChatTitle(existingChats) {
+  let maxNum = 0
+  try {
+    for (const c of (Array.isArray(existingChats) ? existingChats : [])) {
+      const t = c && c.title ? String(c.title) : ''
+      const m = /^\s*Chat\s+(\d+)\s*$/i.exec(t)
+      if (m) {
+        const n = Number(m[1])
+        if (Number.isFinite(n) && n > maxNum) maxNum = n
+      }
+    }
+  } catch {}
+  const next = (maxNum || 0) + 1
+  return `Chat ${next}`
+}
 
 export default function Chat({ engine, activeSheet, onEngineMutated }) {
   const [systemPrompt, setSystemPrompt] = useState(() => {
@@ -50,9 +79,56 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
   const [model, setModel] = useState(() => {
     try { return localStorage.getItem(MODEL_STORAGE_KEY) || 'openai/gpt-oss-20b' } catch { return 'openai/gpt-oss-20b' }
   })
-  const [messages, setMessages] = useState(() => {
-    return []
+  const [chats, setChats] = useState(() => {
+    try {
+      const raw = localStorage.getItem(CHATS_STORAGE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          return parsed.map((c) => ({
+            id: c && c.id ? c.id : (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(16) + Math.random().toString(16).slice(2))),
+            title: c && c.title ? String(c.title) : 'New chat',
+            createdAt: Number(c && c.createdAt) || Date.now(),
+            updatedAt: Number(c && c.updatedAt) || Date.now(),
+            messages: Array.isArray(c && c.messages) ? c.messages : [],
+          }))
+        }
+      }
+    } catch {}
+    return [createNewChat('Chat 1')]
   })
+  const [activeChatId, setActiveChatId] = useState(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_CHAT_ID_STORAGE_KEY)
+      if (saved) return saved
+    } catch {}
+    try {
+      const raw = localStorage.getItem(CHATS_STORAGE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed) && parsed[0] && parsed[0].id) return parsed[0].id
+      }
+    } catch {}
+    return null
+  })
+  const activeChatIndex = useMemo(() => chats.findIndex((c) => c && c.id === activeChatId) , [chats, activeChatId])
+  const messages = useMemo(() => (activeChatIndex >= 0 ? (chats[activeChatIndex].messages || []) : (chats[0] ? chats[0].messages || [] : [])), [chats, activeChatIndex])
+  const setMessages = useCallback((updater) => {
+    setChats((prev) => {
+      const idx = prev.findIndex((c) => c && c.id === (activeChatId || (prev[0] && prev[0].id)))
+      if (idx === -1) return prev
+      const current = prev[idx]
+      const prevMsgs = Array.isArray(current.messages) ? current.messages : []
+      const nextMsgs = typeof updater === 'function' ? updater(prevMsgs) : updater
+      const updated = prev.slice()
+      updated[idx] = {
+        ...current,
+        messages: nextMsgs,
+        updatedAt: Date.now(),
+      }
+      return updated
+    })
+  }, [activeChatId])
   const [userInput, setUserInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState(null)
@@ -67,19 +143,17 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
       const raw = localStorage.getItem(MCP_SERVERS_STORAGE_KEY)
       if (raw) {
         const parsed = JSON.parse(raw)
-        if (Array.isArray(parsed) && parsed.length > 0) {
-                  return parsed.map((s) => ({
-          name: s?.name || 'MCP',
-          url: s?.url || '',
-          enabled: s?.enabled !== false,
-          transport: s?.transport || 'http',
-        }))
+        if (Array.isArray(parsed)) {
+          return parsed.map((s) => ({
+            name: s?.name || 'MCP',
+            url: s?.url || '',
+            enabled: s?.enabled !== false,
+            transport: s?.transport || 'http',
+          }))
         }
       }
     } catch {}
-    return [
-      { name: 'DeepWiki MCP', url: 'https://mcp.deepwiki.com/mcp', enabled: true, transport: 'http' },
-    ]
+    return []
   })
   // Track live MCP connector snapshots
   const mcpSnapshotsRef = useRef([])
@@ -93,6 +167,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
+  const backdropMouseDownRef = useRef(false)
   const scrollToBottom = useCallback(() => {
     const el = messagesEndRef.current
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -165,6 +240,49 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
     try { localStorage.setItem(SYSTEM_PROMPT_STORAGE_KEY, val) } catch {}
   }, [])
 
+  // Persist chats and active chat id
+  useEffect(() => {
+    try { localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(chats)) } catch {}
+  }, [chats])
+  useEffect(() => {
+    const id = activeChatId || (chats[0] && chats[0].id) || ''
+    try { localStorage.setItem(ACTIVE_CHAT_ID_STORAGE_KEY, id) } catch {}
+  }, [activeChatId, chats])
+
+  const handleNewChat = useCallback(() => {
+    const chat = createNewChat(getNextChatTitle(chats))
+    setChats((prev) => [chat, ...prev])
+    setActiveChatId(chat.id)
+    setUserInput('')
+    setError(null)
+  }, [chats])
+
+  const handleDeleteChat = useCallback(() => {
+    if (isStreaming) return
+    try {
+      if (typeof window !== 'undefined') {
+        const ok = window.confirm('Delete this chat? This cannot be undone.')
+        if (!ok) return
+      }
+    } catch {}
+    const idToDelete = activeChatId || (chats[0] && chats[0].id)
+    const idx = chats.findIndex((c) => c && c.id === idToDelete)
+    const nextArr = chats.filter((c) => c && c.id !== idToDelete)
+    if (nextArr.length === 0) {
+      const newChat = createNewChat(getNextChatTitle(nextArr))
+      setChats([newChat])
+      setActiveChatId(newChat.id)
+    } else {
+      let nextActive = null
+      if (idx !== -1) nextActive = (chats[idx + 1] || chats[idx - 1] || null)
+      if (!nextActive) nextActive = nextArr[0]
+      setChats(nextArr)
+      setActiveChatId(nextActive && nextActive.id ? nextActive.id : nextArr[0].id)
+    }
+    setUserInput('')
+    setError(null)
+  }, [isStreaming, activeChatId, chats])
+
   const openSettings = useCallback(() => {
     setDraftSystemPrompt(systemPrompt)
     setDraftModel(model)
@@ -175,6 +293,19 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
   const closeSettings = useCallback(() => {
     setSettingsOpen(false)
   }, [])
+
+  // Close on Escape only when settings are open
+  useEffect(() => {
+    if (!settingsOpen) return
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeSettings()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [settingsOpen, closeSettings])
 
   const saveSettings = useCallback(() => {
     try { localStorage.setItem(SYSTEM_PROMPT_STORAGE_KEY, draftSystemPrompt) } catch {}
@@ -217,7 +348,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
       }
 
       // Use a loop to allow multiple rounds of tool calls until the model stops calling tools
-      const sampling = { temperature: 1, top_p: 1, max_completion_tokens: 2048 }
+      const sampling = { temperature: 1, top_p: 1, max_completion_tokens: 2048, reasoning_effort: "high"}
 
       // Start conversation with the built request messages (system + history + user)
       const conv = reqMessages.slice()
@@ -394,7 +525,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
       // Return focus to the textarea for rapid follow-ups
       if (inputRef.current) inputRef.current.focus()
     }
-  }, [groq, userInput, systemPrompt, messages, model])
+  }, [groq, userInput, systemPrompt, messages, model, setMessages])
 
   return (
     <div className="chat-pane">
@@ -412,7 +543,21 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
         ) : null
       ))}
       <div className="chat-toolbar">
-        <div className="chat-title">Chat</div>
+        <div className="chat-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <select
+            className="chat-select"
+            value={(activeChatIndex >= 0 ? chats[activeChatIndex].id : (chats[0] && chats[0].id)) || ''}
+            onChange={(e) => setActiveChatId(e.target.value)}
+            disabled={isStreaming}
+            title={isStreaming ? 'Wait for response to finish before switching' : 'Select a chat'}
+          >
+            {chats.map((c) => (
+              <option key={c.id} value={c.id}>{c.title || 'Untitled chat'}</option>
+            ))}
+          </select>
+          <button className="btn" onClick={handleNewChat} disabled={isStreaming} title="Start a new chat">New</button>
+          <button className="btn" onClick={handleDeleteChat} disabled={isStreaming || chats.length === 0} title="Delete current chat">Delete</button>
+        </div>
         <div style={{ flex: 1 }} />
         <div className="mcp-status" style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           {(Array.isArray(mcpSnapshotsRef.current) ? mcpSnapshotsRef.current : []).map((snap, i) => (
@@ -433,7 +578,23 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
       </div>
 
       {settingsOpen && (
-        <div className="modal-backdrop" onClick={closeSettings}>
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => {
+            if (e.button !== 0) return
+            if (e.target === e.currentTarget) backdropMouseDownRef.current = true
+          }}
+          onMouseUp={(e) => {
+            try {
+              if (e.button !== 0) return
+              if (backdropMouseDownRef.current && e.target === e.currentTarget) {
+                closeSettings()
+              }
+            } finally {
+              backdropMouseDownRef.current = false
+            }
+          }}
+        >
           <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">Chat Settings</div>

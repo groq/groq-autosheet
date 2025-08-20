@@ -218,6 +218,18 @@ export function registerBuiltins(registry) {
       return err(ERROR.NA, 'Not found');
     }
   });
+
+  // AI(prompt)
+  // Returns cached value if available; otherwise triggers async fetch and returns a placeholder.
+  registry.register('AI', (args, engine) => {
+    const [prompt] = ensureArray(args, 1);
+    const text = prompt == null ? '' : String(prompt);
+    if (!engine || typeof engine.requestAi !== 'function') return '#AI_UNAVAILABLE';
+    const cached = engine.getAiCached(text);
+    if (cached !== undefined) return cached;
+    engine.requestAi(text);
+    return '(loading…)';
+  });
 }
 
 function buildCriterion(criterion) {

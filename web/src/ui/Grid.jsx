@@ -9,6 +9,8 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
   const isSelectingRef = useRef(false)
   const dragStartRef = useRef(null)
   const [selectionRect, setSelectionRect] = useState(null)
+  const lastCopyRef = useRef(null)
+  const lastCopyTextRef = useRef('')
 
   const DEFAULT_COL_WIDTH = 100
   const DEFAULT_ROW_HEIGHT = 22
@@ -198,6 +200,61 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
           setSelection({ row: r >= 1 ? r : 1, col })
         }
       }
+      // Expand selection using the same jump logic, extending from current focus (or anchor if none)
+      const expandJumpHorizontal = (dir) => {
+        const base = { row, col }
+        const cur = (focus && (focus.row || focus.col)) ? focus : base
+        if (dir > 0) {
+          const next = cur.col + 1
+          if (next <= cols && isNonEmpty(cur.row, next)) {
+            let c = next
+            while (c + 1 <= cols && isNonEmpty(cur.row, c + 1)) c++
+            setSelection({ row, col, focus: { row: cur.row, col: c } })
+            return
+          }
+          let c = next
+          while (c <= cols && !isNonEmpty(cur.row, c)) c++
+          setSelection({ row, col, focus: { row: cur.row, col: c <= cols ? c : cols } })
+        } else {
+          const prev = cur.col - 1
+          if (prev >= 1 && isNonEmpty(cur.row, prev)) {
+            let c = prev
+            while (c - 1 >= 1 && isNonEmpty(cur.row, c - 1)) c--
+            setSelection({ row, col, focus: { row: cur.row, col: c } })
+            return
+          }
+          let c = prev
+          while (c >= 1 && !isNonEmpty(cur.row, c)) c--
+          setSelection({ row, col, focus: { row: cur.row, col: c >= 1 ? c : 1 } })
+        }
+      }
+      const expandJumpVertical = (dir) => {
+        const base = { row, col }
+        const cur = (focus && (focus.row || focus.col)) ? focus : base
+        if (dir > 0) {
+          const next = cur.row + 1
+          if (next <= rows && isNonEmpty(next, cur.col)) {
+            let r = next
+            while (r + 1 <= rows && isNonEmpty(r + 1, cur.col)) r++
+            setSelection({ row, col, focus: { row: r, col: cur.col } })
+            return
+          }
+          let r = next
+          while (r <= rows && !isNonEmpty(r, cur.col)) r++
+          setSelection({ row, col, focus: { row: r <= rows ? r : rows, col: cur.col } })
+        } else {
+          const prev = cur.row - 1
+          if (prev >= 1 && isNonEmpty(prev, cur.col)) {
+            let r = prev
+            while (r - 1 >= 1 && isNonEmpty(r - 1, cur.col)) r--
+            setSelection({ row, col, focus: { row: r, col: cur.col } })
+            return
+          }
+          let r = prev
+          while (r >= 1 && !isNonEmpty(r, cur.col)) r--
+          setSelection({ row, col, focus: { row: r >= 1 ? r : 1, col: cur.col } })
+        }
+      }
       const expand = (dr, dc) => {
         const base = { row, col }
         const cur = focus && (focus.row || focus.col) ? focus : base
@@ -209,28 +266,32 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault()
-        if (isMeta) jumpVertical(-1)
+        if (isMeta && e.shiftKey) expandJumpVertical(-1)
+        else if (isMeta) jumpVertical(-1)
         else if (e.shiftKey) expand(-1, 0)
         else if (hasRange) move(-1, 0)
         else move(-1, 0)
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        if (isMeta) jumpVertical(1)
+        if (isMeta && e.shiftKey) expandJumpVertical(1)
+        else if (isMeta) jumpVertical(1)
         else if (e.shiftKey) expand(1, 0)
         else if (hasRange) move(1, 0)
         else move(1, 0)
       }
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
-        if (isMeta) jumpHorizontal(-1)
+        if (isMeta && e.shiftKey) expandJumpHorizontal(-1)
+        else if (isMeta) jumpHorizontal(-1)
         else if (e.shiftKey) expand(0, -1)
         else if (hasRange) move(0, -1)
         else move(0, -1)
       }
       if (e.key === 'ArrowRight') {
         e.preventDefault()
-        if (isMeta) jumpHorizontal(1)
+        if (isMeta && e.shiftKey) expandJumpHorizontal(1)
+        else if (isMeta) jumpHorizontal(1)
         else if (e.shiftKey) expand(0, 1)
         else if (hasRange) move(0, 1)
         else move(0, 1)
@@ -343,7 +404,7 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
     const startWidth = colWidths[colIndex]
     const onMove = (e) => {
       const dx = e.clientX - startClientX
-      const next = Math.max(40, startWidth + dx)
+      const next = Math.max(10, startWidth + dx)  // Allow columns as small as 10px
       setColWidths((w) => w.map((val, i) => (i === colIndex ? next : val)))
     }
     const onUp = () => {
@@ -372,7 +433,7 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
   const autoFitColumn = (colIndex) => {
     const table = tableRef.current
     if (!table) return
-    let maxWidth = 40
+    let maxWidth = 10  // Minimum width for auto-fit
     const headerRow = table.querySelector('thead tr')
     if (headerRow && headerRow.children[colIndex + 1]) {
       const th = headerRow.children[colIndex + 1]
@@ -452,8 +513,81 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
   }
 
   return (
-    <div className="grid" tabIndex={0} ref={tableRef}>
-      <table>
+    <div
+      className="grid"
+      tabIndex={0}
+      ref={tableRef}
+      onCopy={(e) => {
+        // Allow native copy inside inputs
+        if (document.activeElement && document.activeElement.tagName === 'INPUT') return
+        const { row, col, focus } = selection
+        const top = focus ? Math.min(row, focus.row) : row
+        const left = focus ? Math.min(col, focus.col) : col
+        const bottom = focus ? Math.max(row, focus.row) : row
+        const right = focus ? Math.max(col, focus.col) : col
+        const height = bottom - top + 1
+        const width = right - left + 1
+        const data = []
+        for (let r = 0; r < height; r++) {
+          const arr = []
+          for (let c = 0; c < width; c++) {
+            const raw = getCellRaw ? getCellRaw(top + r, left + c) : ''
+            arr.push(raw == null ? '' : raw)
+          }
+          data.push(arr)
+        }
+        const tsv = data.map((rowArr) => rowArr.map((v) => String(v ?? '')).join('\t')).join('\n')
+        try {
+          if (e && e.clipboardData) {
+            e.clipboardData.setData('text/plain', tsv)
+            e.preventDefault()
+          } else if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(tsv).catch(() => {})
+          }
+        } catch {}
+        lastCopyRef.current = { top, left, height, width, data }
+        lastCopyTextRef.current = tsv
+      }}
+      onPaste={(e) => {
+        // Allow native paste inside inputs
+        if (document.activeElement && document.activeElement.tagName === 'INPUT') return
+        const doPaste = (text) => {
+          const lines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+          // Drop a single trailing empty line often present from other apps
+          if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+          const matrix = lines.map((line) => line.split('\t'))
+          if (matrix.length === 0) return
+          const destTop = selection.row
+          const destLeft = selection.col
+          const src = lastCopyRef.current
+          const samePayload = lastCopyTextRef.current === String(text || '')
+          const deltaRow = src && samePayload ? (destTop - src.top) : 0
+          const deltaCol = src && samePayload ? (destLeft - src.left) : 0
+          const height = matrix.length
+          const width = Math.max(0, ...matrix.map((r) => r.length))
+          for (let r = 0; r < height; r++) {
+            for (let c = 0; c < width; c++) {
+              const tr = Math.min(rows, destTop + r)
+              const tc = Math.min(cols, destLeft + c)
+              let val = matrix[r][c] ?? ''
+              if (typeof val === 'string' && val.startsWith('=') && src && samePayload) {
+                val = adjustFormula(val, deltaRow, deltaCol)
+              }
+              onEdit(tr, tc, val)
+            }
+          }
+        }
+        if (e && e.clipboardData) {
+          const text = e.clipboardData.getData('text/plain')
+          e.preventDefault()
+          doPaste(text)
+        } else if (navigator.clipboard && navigator.clipboard.readText) {
+          e && e.preventDefault()
+          navigator.clipboard.readText().then(doPaste).catch(() => {})
+        }
+      }}
+    >
+      <table style={{ width: `${ROW_HEADER_WIDTH + colWidths.reduce((sum, w) => sum + w, 0)}px` }}>
         <colgroup>
           <col style={{ width: ROW_HEADER_WIDTH }} />
           {colWidths.map((w, i) => (
@@ -595,6 +729,118 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
 
 function colLabel(n) {
   let c = n
+  let s = ''
+  while (c > 0) {
+    const rem = (c - 1) % 26
+    s = String.fromCharCode(65 + rem) + s
+    c = Math.floor((c - 1) / 26)
+  }
+  return s
+}
+
+// ===== Clipboard/formula helpers =====
+function adjustFormula(formula, deltaRow, deltaCol) {
+  const input = String(formula || '')
+  if (!input.startsWith('=')) return input
+  const body = input.slice(1)
+  // Avoid altering content inside quoted strings
+  let out = ''
+  let i = 0
+  while (i < body.length) {
+    const ch = body[i]
+    if (ch === '"') {
+      // copy string literal verbatim
+      let j = i + 1
+      while (j < body.length) {
+        const cj = body[j]
+        if (cj === '"') { j++; break }
+        if (cj === '\\') { j += 2; continue }
+        j++
+      }
+      out += body.slice(i, j)
+      i = j
+      continue
+    }
+    // Try to match range or single ref at this position
+    const rangeMatch = matchA1Range(body, i)
+    if (rangeMatch) {
+      const { text, len, left, right } = rangeMatch
+      const adjLeft = adjustCellRef(left, deltaRow, deltaCol)
+      const adjRight = adjustCellRef(right, deltaRow, deltaCol)
+      out += adjLeft + ':' + adjRight
+      i += len
+      continue
+    }
+    const cellMatch = matchA1Cell(body, i)
+    if (cellMatch) {
+      const { text, len } = cellMatch
+      out += adjustCellRef(text, deltaRow, deltaCol)
+      i += len
+      continue
+    }
+    out += ch
+    i++
+  }
+  return '=' + out
+}
+
+function matchA1Cell(s, start) {
+  // Optional sheet: letters/digits/underscore
+  const re = /^(?:([A-Za-z0-9_]+)!){0,1}(\$?[A-Za-z]+\$?\d+)/
+  const m = re.exec(s.slice(start))
+  if (!m) return null
+  return { text: (m[1] ? m[1] + '!' : '') + m[2], len: m[0].length }
+}
+
+function matchA1Range(s, start) {
+  const re = /^(?:([A-Za-z0-9_]+)!){0,1}(\$?[A-Za-z]+\$?\d+)\s*:\s*(?:([A-Za-z0-9_]+)!){0,1}(\$?[A-Za-z]+\$?\d+)/
+  const m = re.exec(s.slice(start))
+  if (!m) return null
+  const left = (m[1] ? m[1] + '!' : '') + m[2]
+  const right = (m[3] ? m[3] + '!' : '') + m[4]
+  return { text: m[0], len: m[0].length, left, right }
+}
+
+function adjustCellRef(ref, dRow, dCol) {
+  const { sheet, colLetters, rowNumber, colAbs, rowAbs } = parseCellRef(ref)
+  if (!colLetters || !rowNumber) return ref
+  const colNum = colLettersToNumber(colLetters)
+  let newCol = colAbs ? colNum : colNum + dCol
+  let newRow = rowAbs ? rowNumber : rowNumber + dRow
+  if (!Number.isFinite(newCol) || newCol < 1) newCol = 1
+  if (!Number.isFinite(newRow) || newRow < 1) newRow = 1
+  const colOut = (colAbs ? '$' : '') + numberToColLetters(newCol)
+  const rowOut = (rowAbs ? '$' : '') + String(newRow)
+  return (sheet ? sheet + '!' : '') + colOut + rowOut
+}
+
+function parseCellRef(ref) {
+  const str = String(ref || '')
+  const parts = str.split('!')
+  const sheet = parts.length === 2 ? parts[0] : ''
+  const core = parts.length === 2 ? parts[1] : parts[0]
+  const m = /^(\$?)([A-Za-z]+)(\$?)(\d+)$/.exec(core)
+  if (!m) return { sheet: sheet || '', colLetters: '', rowNumber: 0, colAbs: false, rowAbs: false }
+  return {
+    sheet: sheet || '',
+    colLetters: m[2].toUpperCase(),
+    rowNumber: parseInt(m[4], 10),
+    colAbs: !!m[1],
+    rowAbs: !!m[3],
+  }
+}
+
+function colLettersToNumber(letters) {
+  let n = 0
+  const s = String(letters || '').toUpperCase()
+  for (let i = 0; i < s.length; i++) {
+    n = n * 26 + (s.charCodeAt(i) - 64)
+  }
+  return n
+}
+
+function numberToColLetters(n) {
+  let c = Math.max(1, Math.floor(n))
   let s = ''
   while (c > 0) {
     const rem = (c - 1) % 26

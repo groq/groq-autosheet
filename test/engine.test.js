@@ -146,6 +146,46 @@ describe('SpreadsheetEngine', () => {
     expect(engine.evaluateCell('S', 'B1')).toBe('b');
     expect(engine.evaluateCell('S', 'B2')).toBe('b');
   });
+
+  it('getRange returns matrix with computed values by default', () => {
+    const engine = new SpreadsheetEngine();
+    registerBuiltins(engine.registry);
+    engine.addSheet('Sheet1');
+    engine.setCell('Sheet1', 'A1', 1);
+    engine.setCell('Sheet1', 'A2', '=A1+1');
+    engine.setCell('Sheet1', 'B1', '=SUM(A1:A2)');
+    const res = engine.getRange('Sheet1', 'A1:B2');
+    expect(res.sheet).toBe('Sheet1');
+    expect(res.range).toBe('A1:B2');
+    // rows[0][0] -> A1, rows[1][0] -> A2, rows[0][1] -> B1
+    expect(res.rows[0][0].address).toBe('A1');
+    expect(res.rows[0][0].computed).toBe(1);
+    expect(res.rows[1][0].address).toBe('A2');
+    expect(res.rows[1][0].computed).toBe(2);
+    expect(res.rows[0][1].address).toBe('B1');
+    expect(res.rows[0][1].computed).toBe(3);
+  });
+
+  it('setRange writes values and returns echo with computed values', () => {
+    const engine = new SpreadsheetEngine();
+    registerBuiltins(engine.registry);
+    engine.addSheet('S');
+    const write = [
+      [1, 2],
+      ['=A1+B1', '=SUM(A1:B1)']
+    ];
+    const res = engine.setRange('S', 'A1:B2', write);
+    expect(res.ok).toBe(true);
+    expect(res.sheet).toBe('S');
+    expect(res.range).toBe('A1:B2');
+    // Ensure raw and computed are present
+    expect(res.rows[0][0].raw).toBe(1);
+    expect(res.rows[0][1].raw).toBe(2);
+    expect(String(engine.getCell('S', 'A2'))).toBe('=A1+B1');
+    expect(res.rows[1][0].computed).toBe(3);
+    expect(String(engine.getCell('S', 'B2'))).toBe('=SUM(A1:B1)');
+    expect(res.rows[1][1].computed).toBe(3);
+  });
 });
 
 

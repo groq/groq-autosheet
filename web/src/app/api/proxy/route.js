@@ -34,7 +34,22 @@ async function handleProxy(req) {
 
     // Forward method, headers and body with strict header allowlist
     const method = req.method
-    const body = method === 'GET' || method === 'HEAD' ? undefined : req.body
+    // For debugging 5xx errors, we need to read the body first if it's a POST
+    let body = undefined
+    let bodyText = undefined
+    if (method !== 'GET' && method !== 'HEAD') {
+      if (method === 'POST') {
+        // Read the body for potential debugging
+        try {
+          bodyText = await req.text()
+          body = bodyText
+        } catch {
+          body = req.body
+        }
+      } else {
+        body = req.body
+      }
+    }
     const incoming = req.headers
     const forwardedHeaders = new Headers()
     const allow = new Set([
@@ -53,10 +68,24 @@ async function handleProxy(req) {
       forwardedHeaders.set(key, v)
     }
 
-    // For SSE GET, avoid sending a body and keep headers; for POST allow body
+    // For GET, avoid sending a body and keep headers; for POST allow body
+    // Important for event-stream endpoints (e.g., SSE or other Streamable HTTP)
     const isGet = method === 'GET'
     const fetchInit = isGet ? { method, headers: forwardedHeaders } : { method, headers: forwardedHeaders, body, duplex: 'half' }
     const res = await fetch(targetUrl, fetchInit)
+    
+    // Get content type for various checks
+    const contentType = res.headers.get('content-type')
+    
+    // Debug event-stream connections (SSE or other Streamable HTTP)
+    if (contentType && contentType.includes('text/event-stream')) {
+      console.log('[proxy] Event-stream connection established (SSE or Streamable HTTP):', {
+        url: targetUrl,
+        status: res.status,
+        contentType,
+        headers: Object.fromEntries(res.headers.entries())
+      })
+    }
     
     // Debug log for specific URLs
     if (targetUrl.includes('.well-known/oauth')) {
@@ -64,8 +93,41 @@ async function handleProxy(req) {
         url: targetUrl,
         status: res.status,
         contentLength: res.headers.get('content-length'),
-        contentType: res.headers.get('content-type')
+        contentType
       })
+    }
+
+    // Debug logging for upstream 5xx responses
+    if (res.status >= 500) {
+      if (!contentType || !contentType.includes('text/event-stream')) {
+        let text = ''
+        try {
+          text = await res.text()
+        } catch (e) {
+          // ignore read errors, still return original status
+        }
+        
+        console.error('[proxy] Upstream 5xx error:', {
+          url: targetUrl,
+          method,
+          status: res.status,
+          contentType,
+          requestHeaders: Object.fromEntries(forwardedHeaders.entries()),
+          requestBody: bodyText ? bodyText.substring(0, 1000) : '[No body]',
+          responseBody: text.substring(0, 2000)
+        })
+        const headers = new Headers(res.headers)
+        headers.delete('content-encoding')
+        headers.delete('transfer-encoding')
+        headers.set('content-length', String(text.length))
+        return new Response(text, { status: res.status, statusText: res.statusText, headers })
+      } else {
+        console.error('[proxy] Upstream 5xx error with event-stream content-type; streaming without buffering', {
+          url: targetUrl,
+          status: res.status,
+          contentType
+        })
+      }
     }
 
     // Debug logging for 401 responses (only for debugging, don't consume body in production)
@@ -87,8 +149,12 @@ async function handleProxy(req) {
 
     // For non-streaming responses, fully consume the body to avoid truncation issues
     // This is especially important for JSON responses
-    const contentType = res.headers.get('content-type')
-    if (contentType && (contentType.includes('application/json') || contentType.includes('text/'))) {
+    // IMPORTANT: Don't buffer text/event-stream responses — these are event streams (SSE or other Streamable HTTP) and need to stream!
+    const shouldBuffer = contentType && (
+      contentType.includes('application/json') || 
+      (contentType.includes('text/') && !contentType.includes('text/event-stream'))
+    )
+    if (shouldBuffer) {
       const text = await res.text()
       // Debug logging for OAuth responses
       if (targetUrl.includes('.well-known/oauth')) {
@@ -108,10 +174,16 @@ async function handleProxy(req) {
       return new Response(text, { status: res.status, statusText: res.statusText, headers })
     }
     
-    // For other content types, stream the response
+    // For other content types (including text/event-stream), stream the response
     const headers = new Headers(res.headers)
     headers.delete('content-encoding')
     headers.delete('transfer-encoding')
+    
+    // Log when streaming event-stream
+    if (contentType && contentType.includes('text/event-stream')) {
+      console.log('[proxy] Streaming text/event-stream response to client')
+    }
+    
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
   } catch (err) {
     return NextResponse.json({ error: String(err && (err.message || err)) }, { status: 500 })

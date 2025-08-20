@@ -1,3 +1,108 @@
+import * as acorn from 'acorn'
+import { registerBuiltins } from 'autosheet'
+import { loadScriptsFromStorage, saveScriptsToStorage } from './ScriptEditor.jsx'
+
+// Resolve sheet-qualified single cell address like "Sheet2!A1"
+function resolveSheetAndAddress(defaultSheet, address) {
+  const m = /^([^!]+)!([^!]+)$/.exec(String(address))
+  if (m) {
+    return { sheet: String(m[1]), addr: String(m[2]).trim() }
+  }
+  return { sheet: String(defaultSheet), addr: String(address).trim() }
+}
+
+// Resolve sheet-qualified range like "Sheet2!A1:C3"
+function resolveSheetAndRange(defaultSheet, rangeStr) {
+  const m = /^([^!]+)!(.+)$/.exec(String(rangeStr))
+  if (m) {
+    return { sheet: String(m[1]), range: String(m[2]).trim() }
+  }
+  return { sheet: String(defaultSheet), range: String(rangeStr).trim() }
+}
+
+// Walk a result object and ensure cumulative string content <= limit chars.
+// If exceeded, truncate the last string segment and append " TRUNCATED".
+function enforceCharLimit(result, limit = 1000) {
+  let used = 0
+  let didTruncate = false
+  const seen = new WeakSet()
+
+  function walk(value) {
+    if (value == null) return value
+    if (typeof value === 'string') {
+      const remaining = limit - used
+      if (remaining <= 0) {
+        if (!didTruncate) {
+          didTruncate = true
+          return 'TRUNCATED'
+        }
+        return ''
+      }
+      if (value.length <= remaining) {
+        used += value.length
+        return value
+      }
+      const suffix = ' TRUNCATED'
+      const keep = Math.max(0, remaining - suffix.length)
+      const truncated = value.slice(0, keep) + suffix
+      used += truncated.length
+      didTruncate = true
+      return truncated
+    }
+    if (Array.isArray(value)) {
+      return value.map((v) => walk(v))
+    }
+    if (typeof value === 'object') {
+      if (seen.has(value)) return value
+      seen.add(value)
+      const out = {}
+      for (const k of Object.keys(value)) {
+        out[k] = walk(value[k])
+      }
+      return out
+    }
+    return value
+  }
+
+  const walked = walk(result)
+  if (didTruncate && walked && typeof walked === 'object' && !Array.isArray(walked)) {
+    // Append a clear note at the end of the object to indicate truncation
+    // Property insertion order is preserved in JSON.stringify in practice
+    walked.note = 'TRUNCATED'
+  }
+  return walked
+}
+
+// Keep only cells that have content and drop blank/invalid addresses.
+function hasContent(value) {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'string') return value.length > 0
+  return true
+}
+
+function filterRangeResult(res, mode) {
+  const checkRaw = mode === 'raw' || mode === 'both'
+  const checkComputed = mode === 'computed' || mode === 'both'
+  const filteredRows = []
+  for (const row of Array.isArray(res?.rows) ? res.rows : []) {
+    const newRow = []
+    for (const cell of Array.isArray(row) ? row : []) {
+      const adr = cell && typeof cell.address === 'string' ? cell.address.trim() : ''
+      if (!adr) continue
+      const rawOk = checkRaw && hasContent(cell.raw)
+      const compOk = checkComputed && hasContent(cell.computed)
+      if (rawOk || compOk) {
+        const kept = { address: adr }
+        if (checkRaw && 'raw' in cell) kept.raw = cell.raw
+        if (checkComputed && 'computed' in cell) kept.computed = cell.computed
+        newRow.push(kept)
+      }
+    }
+    if (newRow.length > 0) filteredRows.push(newRow)
+  }
+  return { sheet: res.sheet, range: res.range, rows: filteredRows }
+}
+
 export function getSpreadsheetTools() {
   return [
     {
@@ -36,7 +141,7 @@ export function getSpreadsheetTools() {
       type: 'function',
       function: {
         name: 'spreadsheet_get_range',
-        description: 'Reads a rectangular range (e.g., "A1:C3"). Returns a matrix of cell data according to the selected mode.',
+        description: 'Reads a rectangular range (e.g., "A1:C3"). Returns only cells that have content according to the selected mode (raw, computed, or both). Empty/non-existent cells are omitted.',
         parameters: {
           type: 'object',
           properties: {
@@ -52,7 +157,7 @@ export function getSpreadsheetTools() {
       type: 'function',
       function: {
         name: 'spreadsheet_set_range',
-        description: 'Writes a 2D array of values (or formulas) into a rectangular range (e.g., "A1:C3"). The provided matrix shape must match the range size.',
+        description: 'Writes a 2D array of values (or formulas) into a rectangular range (e.g., "A1:C3"). The provided matrix shape must match the range size. Response includes only cells that have content; empty/non-existent cells are omitted.',
         parameters: {
           type: 'object',
           properties: {
@@ -71,6 +176,91 @@ export function getSpreadsheetTools() {
         },
       },
     },
+    // ===== Script management tools =====
+    {
+      type: 'function',
+      function: {
+        name: 'spreadsheet_sheets_list',
+        description: 'Lists all sheet names currently defined in the engine.',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'spreadsheet_scripts_list',
+        description: 'Lists all user scripts (id and name only). Call this before creating a new script.',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'spreadsheet_scripts_get',
+        description: 'Reads a single script by id or name. Returns id, name, and content.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Script id.' },
+            name: { type: 'string', description: 'Script file name.' },
+          },
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'spreadsheet_scripts_get_all',
+        description: 'Reads all scripts with full content.',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'spreadsheet_scripts_create',
+        description: 'Creates a new script in full mode. By default, add new functions to an existing script file (choose the most logical one, find out which ones exist using the spreadsheet_scripts_list tool) and only create a new file if the user explicitly asks for it. Provide the entire file content; name must end with .js and be unique.\n\nCustom functions guide\n- Define top-level functions: function Name(args) { ... }\n- They become available in formulas by name; names starting with \'_\' are ignored.\n- args: array of evaluated arguments from the cell formula\n- Use built-ins via the BUILTINS helper injected into your script\'s scope.\n  Example: function DoubleSum(args) { return BUILTINS.SUM(args) * 2 }\n\nExample function:\nfunction Abc(args) {\n  const x = Number(args?.[0] ?? 0)\n  return x + 1\n}',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'File name, e.g., script2.js' },
+            content: { type: 'string', description: 'Full script content.' },
+          },
+          required: ['name','content'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'spreadsheet_scripts_update',
+        description: 'Edits an existing script in full mode. This is the preferred way to add new functions: update an existing logical script file unless the user explicitly requests creating a new file. Identify by id or name. Provide the entire new content for the file; optionally rename with new_name (must end with .js).\n\nCustom functions guide\n- Define top-level functions: function Name(args) { ... }\n- They become available in formulas by name; names starting with \'_\' are ignored.\n- args: array of evaluated arguments from the cell formula\n- Use built-ins via the BUILTINS helper injected into your script\'s scope.\n  Example: function DoubleSum(args) { return BUILTINS.SUM(args) * 2 }\n\nExample function:\nfunction Abc(args) {\n  const x = Number(args?.[0] ?? 0)\n  return x + 1\n}',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Script id.' },
+            name: { type: 'string', description: 'Script file name (alternative to id).' },
+            content: { type: 'string', description: 'Full new content to replace the script with.' },
+            new_name: { type: 'string', description: 'Optional new file name ending with .js' },
+          },
+          required: ['content'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'spreadsheet_scripts_delete',
+        description: 'Deletes a script by id or name.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Script id.' },
+            name: { type: 'string', description: 'Script file name.' },
+          },
+        },
+      },
+    },
   ]
 }
 
@@ -79,6 +269,13 @@ export function isSpreadsheetToolName(name) {
     || name === 'spreadsheet_set_cell'
     || name === 'spreadsheet_get_range'
     || name === 'spreadsheet_set_range'
+    || name === 'spreadsheet_sheets_list'
+    || name === 'spreadsheet_scripts_list'
+    || name === 'spreadsheet_scripts_get'
+    || name === 'spreadsheet_scripts_get_all'
+    || name === 'spreadsheet_scripts_create'
+    || name === 'spreadsheet_scripts_update'
+    || name === 'spreadsheet_scripts_delete'
 }
 
 export async function runSpreadsheetTool(name, args, ctx) {
@@ -87,125 +284,181 @@ export async function runSpreadsheetTool(name, args, ctx) {
   if (!engine) throw new Error('Spreadsheet engine unavailable')
 
   if (name === 'spreadsheet_get_cell') {
-    const address = String(args?.address || '').trim()
-    if (!address) throw new Error('Missing address')
+    const addressInput = String(args?.address || '').trim()
+    if (!addressInput) throw new Error('Missing address')
     const mode = (args?.mode === 'raw' || args?.mode === 'both') ? args.mode : 'computed'
-    const out = { sheet, address }
-    if (mode === 'raw' || mode === 'both') out.raw = engine.getCell(sheet, address)
-    if (mode === 'computed' || mode === 'both') out.computed = engine.evaluateCell(sheet, address)
-    return out
+    const { sheet: resolvedSheet, addr } = resolveSheetAndAddress(sheet, addressInput)
+    const out = { sheet: resolvedSheet, address: addr }
+    if (mode === 'raw' || mode === 'both') out.raw = engine.getCell(resolvedSheet, addr)
+    if (mode === 'computed' || mode === 'both') out.computed = engine.evaluateCell(resolvedSheet, addr)
+    return enforceCharLimit(out)
   }
 
   if (name === 'spreadsheet_set_cell') {
-    const address = String(args?.address || '').trim()
-    if (!address) throw new Error('Missing address')
+    const addressInput = String(args?.address || '').trim()
+    if (!addressInput) throw new Error('Missing address')
     if (!('value' in args)) throw new Error('Missing value')
     const value = args.value
-    engine.setCell(sheet, address, value)
+    const { sheet: resolvedSheet, addr } = resolveSheetAndAddress(sheet, addressInput)
+    engine.setCell(resolvedSheet, addr, value)
     if (typeof ctx?.onEngineMutated === 'function') ctx.onEngineMutated()
-    const computed = engine.evaluateCell(sheet, address)
-    return { ok: true, sheet, address, raw: engine.getCell(sheet, address), computed }
+    const computed = engine.evaluateCell(resolvedSheet, addr)
+    return enforceCharLimit({ ok: true, sheet: resolvedSheet, address: addr, raw: engine.getCell(resolvedSheet, addr), computed })
   }
 
   if (name === 'spreadsheet_get_range') {
-    const rangeStr = String(args?.range || '').trim()
-    if (!rangeStr) throw new Error('Missing range')
-    const { start, end } = parseRange(rangeStr)
-    const { row: r1, col: c1 } = a1ToRowCol(start)
-    const { row: r2, col: c2 } = a1ToRowCol(end)
-    const rows = [Math.min(r1, r2), Math.max(r1, r2)]
-    const cols = [Math.min(c1, c2), Math.max(c1, c2)]
+    const rangeInput = String(args?.range || '').trim()
+    if (!rangeInput) throw new Error('Missing range')
     const mode = (args?.mode === 'raw' || args?.mode === 'both') ? args.mode : 'computed'
-    const matrix = []
-    for (let r = rows[0]; r <= rows[1]; r++) {
-      const rowArr = []
-      for (let c = cols[0]; c <= cols[1]; c++) {
-        const address = rowColToA1(r, c)
-        const cell = { address }
-        if (mode === 'raw' || mode === 'both') cell.raw = engine.getCell(sheet, address)
-        if (mode === 'computed' || mode === 'both') cell.computed = engine.evaluateCell(sheet, address)
-        rowArr.push(cell)
-      }
-      matrix.push(rowArr)
-    }
-    return { sheet, range: `${rowColToA1(rows[0], cols[0])}:${rowColToA1(rows[1], cols[1])}`, rows: matrix }
+    const { sheet: resolvedSheet, range } = resolveSheetAndRange(sheet, rangeInput)
+    const res = engine.getRange(resolvedSheet, range, mode)
+    const filtered = filterRangeResult(res, mode)
+    return enforceCharLimit(filtered)
   }
 
   if (name === 'spreadsheet_set_range') {
-    const rangeStr = String(args?.range || '').trim()
-    if (!rangeStr) throw new Error('Missing range')
+    const rangeInput = String(args?.range || '').trim()
+    if (!rangeInput) throw new Error('Missing range')
     const values = Array.isArray(args?.values) ? args.values : null
     if (!values || values.length === 0 || !values.every((row) => Array.isArray(row))) {
       throw new Error('values must be a non-empty 2D array')
     }
-    const { start, end } = parseRange(rangeStr)
-    const { row: r1, col: c1 } = a1ToRowCol(start)
-    const { row: r2, col: c2 } = a1ToRowCol(end)
-    const rowCount = Math.abs(r2 - r1) + 1
-    const colCount = Math.abs(c2 - c1) + 1
-    if (values.length !== rowCount || values.some((row) => row.length !== colCount)) {
-      throw new Error(`values shape ${values.length}x${values[0]?.length ?? 0} does not match range size ${rowCount}x${colCount}`)
-    }
-    // Write values
-    for (let i = 0; i < rowCount; i++) {
-      for (let j = 0; j < colCount; j++) {
-        const r = Math.min(r1, r2) + i
-        const c = Math.min(c1, c2) + j
-        const address = rowColToA1(r, c)
-        engine.setCell(sheet, address, values[i][j])
-      }
-    }
+    const { sheet: resolvedSheet, range } = resolveSheetAndRange(sheet, rangeInput)
+    const res = engine.setRange(resolvedSheet, range, values)
     if (typeof ctx?.onEngineMutated === 'function') ctx.onEngineMutated()
-    // Return echo with computed values
-    const resultRows = []
-    for (let i = 0; i < rowCount; i++) {
-      const rowArr = []
-      for (let j = 0; j < colCount; j++) {
-        const r = Math.min(r1, r2) + i
-        const c = Math.min(c1, c2) + j
-        const address = rowColToA1(r, c)
-        rowArr.push({ address, raw: engine.getCell(sheet, address), computed: engine.evaluateCell(sheet, address) })
-      }
-      resultRows.push(rowArr)
+    const filtered = filterRangeResult(res, 'both')
+    return enforceCharLimit(filtered)
+  }
+
+  if (name === 'spreadsheet_sheets_list') {
+    const names = Array.from((engine && engine.sheets && typeof engine.sheets.keys === 'function') ? engine.sheets.keys() : [])
+    return names.map((n) => String(n))
+  }
+
+  // ===== Script management handlers =====
+  if (name === 'spreadsheet_scripts_list') {
+    const scripts = safeLoadScripts()
+    return scripts.map((s) => ({ id: s.id, name: s.name }))
+  }
+
+  if (name === 'spreadsheet_scripts_get') {
+    const scripts = safeLoadScripts()
+    const id = typeof args?.id === 'string' ? args.id : null
+    const nm = typeof args?.name === 'string' ? args.name : null
+    if (!id && !nm) throw new Error('Provide id or name')
+    const script = scripts.find((s) => (id && s.id === id) || (nm && s.name === nm))
+    if (!script) throw new Error('Script not found')
+    return { id: script.id, name: script.name, content: script.content || '' }
+  }
+
+  if (name === 'spreadsheet_scripts_get_all') {
+    const scripts = safeLoadScripts()
+    return scripts.map((s) => ({ id: s.id, name: s.name, content: s.content || '' }))
+  }
+
+  if (name === 'spreadsheet_scripts_create') {
+    const scripts = safeLoadScripts()
+    const nameArg = String(args?.name || '').trim()
+    const content = String(args?.content ?? '')
+    if (!nameArg || !/^[^\s]+\.js$/i.test(nameArg)) throw new Error('Invalid name (must end with .js and contain no spaces)')
+    if (scripts.some((s) => s.name === nameArg)) throw new Error('A script with that name already exists')
+    const id = crypto.randomUUID()
+    const next = [...scripts, { id, name: nameArg, content }]
+    saveScriptsToStorage(next)
+    emitScriptsUpdated(next)
+    await compileAndRegisterScripts(engine, next)
+    if (typeof ctx?.onEngineMutated === 'function') ctx.onEngineMutated()
+    return { ok: true, id, name: nameArg }
+  }
+
+  if (name === 'spreadsheet_scripts_update') {
+    const scripts = safeLoadScripts()
+    const id = typeof args?.id === 'string' ? args.id : null
+    const nm = typeof args?.name === 'string' ? args.name : null
+    if (!id && !nm) throw new Error('Provide id or name')
+    const idx = scripts.findIndex((s) => (id && s.id === id) || (nm && s.name === nm))
+    if (idx === -1) throw new Error('Script not found')
+    const full = String(args?.content ?? '')
+    const newNameRaw = args?.new_name
+    let newName = scripts[idx].name
+    if (typeof newNameRaw === 'string' && newNameRaw.trim()) {
+      if (!/^[^\s]+\.js$/i.test(newNameRaw)) throw new Error('new_name must end with .js and contain no spaces')
+      const duplicate = scripts.some((s, i) => i !== idx && s.name === newNameRaw)
+      if (duplicate) throw new Error('A script with that name already exists')
+      newName = newNameRaw
     }
-    return { ok: true, sheet, range: `${rowColToA1(Math.min(r1, r2), Math.min(c1, c2))}:${rowColToA1(Math.max(r1, r2), Math.max(c1, c2))}`, rows: resultRows }
+    const updated = scripts.slice()
+    updated[idx] = { ...updated[idx], name: newName, content: full }
+    saveScriptsToStorage(updated)
+    emitScriptsUpdated(updated)
+    await compileAndRegisterScripts(engine, updated)
+    if (typeof ctx?.onEngineMutated === 'function') ctx.onEngineMutated()
+    return { ok: true, id: updated[idx].id, name: updated[idx].name }
+  }
+
+  if (name === 'spreadsheet_scripts_delete') {
+    const scripts = safeLoadScripts()
+    const id = typeof args?.id === 'string' ? args.id : null
+    const nm = typeof args?.name === 'string' ? args.name : null
+    if (!id && !nm) throw new Error('Provide id or name')
+    const idx = scripts.findIndex((s) => (id && s.id === id) || (nm && s.name === nm))
+    if (idx === -1) throw new Error('Script not found')
+    const remaining = scripts.filter((_, i) => i !== idx)
+    saveScriptsToStorage(remaining)
+    emitScriptsUpdated(remaining)
+    await compileAndRegisterScripts(engine, remaining)
+    if (typeof ctx?.onEngineMutated === 'function') ctx.onEngineMutated()
+    return { ok: true }
   }
 
   return null
 }
 
-function parseRange(rangeStr) {
-  const parts = String(rangeStr).split(':')
-  if (parts.length !== 2) throw new Error('Invalid range (expected A1:B2)')
-  const start = parts[0].trim()
-  const end = parts[1].trim()
-  if (!/^\$?[A-Za-z]+\$?\d+$/.test(start) || !/^\$?[A-Za-z]+\$?\d+$/.test(end)) {
-    throw new Error('Invalid A1 in range')
-  }
-  return { start, end }
+// ===== Helpers =====
+function safeLoadScripts() {
+  try {
+    const arr = loadScriptsFromStorage()
+    if (Array.isArray(arr)) return arr
+  } catch {}
+  return []
 }
 
-function a1ToRowCol(a1) {
-  const m = /^(\$?)([A-Za-z]+)(\$?)(\d+)$/.exec(a1)
-  if (!m) throw new Error('Invalid A1 ref: ' + a1)
-  const colStr = m[2].toUpperCase()
-  const row = parseInt(m[4], 10)
-  let col = 0
-  for (let i = 0; i < colStr.length; i++) {
-    col = col * 26 + (colStr.charCodeAt(i) - 64)
+async function compileAndRegisterScripts(engine, allScripts) {
+  // Build a combined script, gather top-level function declarations, and safely rebuild registry
+  const combined = allScripts.map((s) => String(s.content || '')).join('\n\n')
+  // Parse for function names (ignore names starting with '_')
+  const ast = acorn.parse(combined, { ecmaVersion: 'latest', sourceType: 'script' })
+  const functionNames = []
+  for (const node of ast.body) {
+    if (node.type === 'FunctionDeclaration' && node.id && node.id.name && !node.id.name.startsWith('_')) {
+      functionNames.push(node.id.name)
+    }
   }
-  return { row, col }
+  const exportList = functionNames.map((n) => `${n}: typeof ${n} !== 'undefined' ? ${n} : undefined`).join(', ')
+  const wrapper = `"use strict";\n${combined}\n;return { ${exportList} };`
+
+  const NewRegistryClass = engine.registry.constructor
+  const newRegistry = new NewRegistryClass()
+  registerBuiltins(newRegistry)
+
+  const builtinsHelper = {}
+  for (const name of newRegistry.names()) {
+    if (name === 'BUILTINS') continue
+    builtinsHelper[name] = (...fnArgs) => newRegistry.get(name)(fnArgs)
+  }
+  const bag = Function('BUILTINS', wrapper)(builtinsHelper)
+  for (const fnName of functionNames) {
+    const fn = bag[fnName]
+    if (typeof fn === 'function') newRegistry.register(fnName, fn)
+  }
+  engine.registry = newRegistry
 }
 
-function rowColToA1(row, col) {
-  let c = col
-  let colStr = ''
-  while (c > 0) {
-    const rem = (c - 1) % 26
-    colStr = String.fromCharCode(65 + rem) + colStr
-    c = Math.floor((c - 1) / 26)
-  }
-  return `${colStr}${row}`
+function emitScriptsUpdated(scripts) {
+  try {
+    const evt = new CustomEvent('autosheet:scripts_updated', { detail: { scripts } })
+    window.dispatchEvent(evt)
+  } catch {}
 }
 
 

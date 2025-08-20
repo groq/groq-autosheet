@@ -307,6 +307,11 @@ export function useMcpClient(options) {
           },
           // Use proxyFetch for all transport and auth requests
           fetch: proxyFetch,
+          // For SSE, also pass the eventSourceInit with fetch
+          eventSourceInit: {
+            fetch: proxyFetch,
+            headers: customHeaders,
+          },
         }
         const t = mode === 'http' ? new StreamableHTTPClientTransport(serverUrl, transportConfig) : new SSEClientTransport(serverUrl, transportConfig)
         
@@ -409,6 +414,11 @@ export function useMcpClient(options) {
         }
       } catch (toolsError) {
         console.error('[MCP] Failed to load tools:', toolsError)
+        // Log more details about the error for debugging
+        if (toolsError.message && toolsError.message.includes('500')) {
+          console.error('[MCP] Server returned 500 error. The server may have an internal issue or may not be ready to handle requests.')
+          console.error('[MCP] Check that the server properly handles the initialized notification and is ready for subsequent requests.')
+        }
         throw toolsError
       }
     } catch (e) {
@@ -470,13 +480,6 @@ export function useMcpClient(options) {
             const authUrl = providerRef.current.getLastAttemptedAuthUrl?.()
             console.log('[MCP] OAuth redirect required, auth URL:', authUrl)
             setAuthUrl(authUrl)
-            // Open the auth URL in a popup
-            if (authUrl && typeof window !== 'undefined') {
-              const popup = window.open(authUrl, 'mcp_oauth', 'width=800,height=600')
-              if (popup) {
-                providerRef.current.onPopupWindow?.(popup)
-              }
-            }
             return
           }
         } catch (authErr) {
@@ -529,11 +532,12 @@ export function useMcpClient(options) {
         const authUrl = providerRef.current.getLastAttemptedAuthUrl?.()
         console.log('[MCP] Manual auth redirect, URL:', authUrl)
         setAuthUrl(authUrl)
-        // Open the auth URL in a popup
-        if (authUrl && typeof window !== 'undefined') {
-          const popup = window.open(authUrl, 'mcp_oauth', 'width=800,height=600')
-          if (popup) {
-            providerRef.current.onPopupWindow?.(popup)
+        // If auto redirect is disabled, open popup manually
+        if (providerRef.current?.preventAutoAuth && authUrl && typeof window !== 'undefined') {
+          const features = 'width=800,height=600'
+          const popup = window.open(authUrl, `mcp_auth_${providerRef.current.serverUrlHash}`, features)
+          if (popup && providerRef.current.onPopupWindow) {
+            try { providerRef.current.onPopupWindow(authUrl, features, popup) } catch {}
           }
         }
       }
