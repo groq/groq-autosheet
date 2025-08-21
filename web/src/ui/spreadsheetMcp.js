@@ -279,9 +279,13 @@ export function isSpreadsheetToolName(name) {
 }
 
 export async function runSpreadsheetTool(name, args, ctx) {
-  const sheet = String(args?.sheet || ctx?.activeSheet || 'Sheet1')
+  let sheet = String(args?.sheet || ctx?.activeSheet || '')
   const { engine } = ctx || {}
   if (!engine) throw new Error('Spreadsheet engine unavailable')
+  if (!sheet) {
+    const first = (engine && engine.sheets && typeof engine.sheets.keys === 'function') ? engine.sheets.keys().next().value : null
+    sheet = first || 'Sheet1'
+  }
 
   if (name === 'spreadsheet_get_cell') {
     const addressInput = String(args?.address || '').trim()

@@ -1,7 +1,7 @@
 "use client"
 import React, { useRef, useEffect, useState } from 'react'
 
-export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getCellRaw, onEdit }) {
+export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getCellRaw, getCellFormat, onEdit, onApplyFormat }) {
   const tableRef = useRef(null)
   const [editing, setEditing] = useState(null)
   const [editValue, setEditValue] = useState('')
@@ -78,6 +78,24 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
       if (e.target && e.target.tagName === 'INPUT') return
       let { row, col, focus } = selection
       const isMeta = e.metaKey || (e.ctrlKey && !e.shiftKey && !e.altKey)
+      // Handle formatting shortcuts
+      if (isMeta && !e.shiftKey && !e.altKey) {
+        if (e.key === 'b' || e.key === 'B') {
+          e.preventDefault()
+          onApplyFormat && onApplyFormat('bold')
+          return
+        }
+        if (e.key === 'i' || e.key === 'I') {
+          e.preventDefault()
+          onApplyFormat && onApplyFormat('italic')
+          return
+        }
+        if (e.key === 'u' || e.key === 'U') {
+          e.preventDefault()
+          onApplyFormat && onApplyFormat('underline')
+          return
+        }
+      }
       if (e.key === 'Enter') {
         e.preventDefault()
         const raw = getCellRaw ? getCellRaw(row, col) : ''
@@ -299,7 +317,7 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
     }
     el.addEventListener('keydown', handleKey)
     return () => el.removeEventListener('keydown', handleKey)
-  }, [selection, setSelection, rows, cols, getCellRaw, onEdit])
+  }, [selection, setSelection, rows, cols, getCellRaw, onEdit, onApplyFormat])
 
   // Keep active cell in view when selection changes
   useEffect(() => {
@@ -708,7 +726,25 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
                         style={{ width: '100%', height: '100%', boxSizing: 'border-box', border: 'none', outline: 'none', font: 'inherit', padding: '0 1px', margin: 0 }}
                       />
                     ) : (
-                      <div className="cell-display"><span className="cell-text">{getCellDisplay(rr, cc)}</span></div>
+                      <div className="cell-display">
+                        <span 
+                          className="cell-text"
+                          style={{
+                            fontWeight: getCellFormat && getCellFormat(rr, cc)?.bold ? 'bold' : 'normal',
+                            fontStyle: getCellFormat && getCellFormat(rr, cc)?.italic ? 'italic' : 'normal',
+                            textDecoration: (() => {
+                              const format = getCellFormat && getCellFormat(rr, cc)
+                              if (!format) return 'none'
+                              const decorations = []
+                              if (format.underline) decorations.push('underline')
+                              if (format.strikethrough) decorations.push('line-through')
+                              return decorations.length > 0 ? decorations.join(' ') : 'none'
+                            })()
+                          }}
+                        >
+                          {getCellDisplay(rr, cc)}
+                        </span>
+                      </div>
                     )}
                   </td>
                 )

@@ -10,7 +10,22 @@ export default function App() {
   const engine = useMemo(() => {
     const e = new SpreadsheetEngine()
     registerBuiltins(e.registry)
-    e.addSheet('Sheet1')
+    // Only create a default sheet if no saved sheets exist
+    try {
+      const raw = localStorage.getItem('autosheet.sheets.v1')
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        const sheetsObj = parsed && parsed.sheets && typeof parsed.sheets === 'object' ? parsed.sheets : {}
+        const names = Object.keys(sheetsObj)
+        if (names.length === 0) {
+          e.addSheet('Sheet1')
+        }
+      } else {
+        e.addSheet('Sheet1')
+      }
+    } catch {
+      e.addSheet('Sheet1')
+    }
     // Re-render when async AI cache updates
     e.onAsyncChange = () => {
       setGridVersion((v) => v + 1)
@@ -18,7 +33,20 @@ export default function App() {
     return e
   }, [])
 
-  const [activeSheet, setActiveSheet] = useState('Sheet1')
+  const [activeSheet, setActiveSheet] = useState(() => {
+    try {
+      const saved = localStorage.getItem('autosheet.activeSheet')
+      if (saved) return String(saved)
+      const raw = localStorage.getItem('autosheet.sheets.v1')
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        const sheetsObj = parsed && parsed.sheets && typeof parsed.sheets === 'object' ? parsed.sheets : {}
+        const names = Object.keys(sheetsObj)
+        if (names.length > 0) return names[0]
+      }
+    } catch {}
+    return 'Sheet1'
+  })
   const [selection, setSelection] = useState({ row: 1, col: 1 })
   const [gridVersion, setGridVersion] = useState(0)
   const displayCacheRef = useRef(new Map())
@@ -28,12 +56,24 @@ export default function App() {
   // Dynamic grid dimensions
   const [gridRows, setGridRows] = useState(100)
   const [gridCols, setGridCols] = useState(26)
+  // ===== Cell formatting state =====
+  const [cellFormats, setCellFormats] = useState(() => {
+    try {
+      const raw = localStorage.getItem('autosheet.cellFormats.v1')
+      if (raw) return JSON.parse(raw)
+    } catch {}
+    return {}
+  })
   // ===== Sheet content persistence =====
   const SHEETS_STORAGE_KEY = 'autosheet.sheets.v1'
   const ACTIVE_SHEET_STORAGE_KEY = 'autosheet.activeSheet'
+  const CELL_FORMATS_STORAGE_KEY = 'autosheet.cellFormats.v1'
   const saveTimerRef = useRef(null)
-  const activeSheetRef = useRef('Sheet1')
+  const activeSheetRef = useRef(activeSheet)
   useEffect(() => { activeSheetRef.current = activeSheet }, [activeSheet])
+  // Keep latest formats in a ref for unload persistence
+  const cellFormatsRef = useRef(cellFormats)
+  useEffect(() => { cellFormatsRef.current = cellFormats }, [cellFormats])
 
   // Ensure async changes invalidate display cache before re-render
   useEffect(() => {
@@ -45,7 +85,7 @@ export default function App() {
   }, [engine])
 
   const serializeSheets = useCallback(() => {
-    const out = { sheets: {}, activeSheet }
+    const out = { sheets: {}, activeSheet, formats: cellFormats }
     try {
       for (const [name, dataMap] of engine.sheets.entries()) {
         const obj = {}
@@ -59,15 +99,16 @@ export default function App() {
       }
     } catch {}
     return out
-  }, [engine, activeSheet])
+  }, [engine, activeSheet, cellFormats])
 
   const persistSheetsNow = useCallback(() => {
     try {
       const payload = serializeSheets()
       localStorage.setItem(SHEETS_STORAGE_KEY, JSON.stringify(payload))
       localStorage.setItem(ACTIVE_SHEET_STORAGE_KEY, String(activeSheet || ''))
+      localStorage.setItem(CELL_FORMATS_STORAGE_KEY, JSON.stringify(cellFormats || {}))
     } catch {}
-  }, [serializeSheets, activeSheet])
+  }, [serializeSheets, activeSheet, cellFormats])
 
   const schedulePersistSheets = useCallback(() => {
     try { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) } catch {}
@@ -91,7 +132,17 @@ export default function App() {
               engine.setCell(name, addr, addrMap[addr])
             }
           }
-          // If default Sheet1 is empty and not in saved, leave as-is; otherwise ok
+          // Restore cell formats if available
+          if (parsed.formats && typeof parsed.formats === 'object') {
+            setCellFormats(parsed.formats)
+          }
+          // If we pre-created Sheet1 but it's not part of saved sheets, remove it when empty
+          if (engine.sheets.has('Sheet1') && !names.includes('Sheet1')) {
+            const defaultMap = engine.sheets.get('Sheet1')
+            if (!defaultMap || defaultMap.size === 0) {
+              engine.sheets.delete('Sheet1')
+            }
+          }
           const savedActive = String(localStorage.getItem(ACTIVE_SHEET_STORAGE_KEY) || '')
           if (savedActive && engine.sheets.has(savedActive)) {
             setActiveSheet(savedActive)
@@ -106,7 +157,7 @@ export default function App() {
     // Persist on unload as a safeguard
     const onBeforeUnload = () => {
       try {
-        const out = { sheets: {}, activeSheet: activeSheetRef.current }
+        const out = { sheets: {}, activeSheet: activeSheetRef.current, formats: cellFormatsRef.current || {} }
         for (const [name, dataMap] of engine.sheets.entries()) {
           const obj = {}
           for (const [addr, val] of dataMap.entries()) {
@@ -119,6 +170,7 @@ export default function App() {
         }
         localStorage.setItem(SHEETS_STORAGE_KEY, JSON.stringify(out))
         localStorage.setItem(ACTIVE_SHEET_STORAGE_KEY, String(activeSheetRef.current || ''))
+        localStorage.setItem(CELL_FORMATS_STORAGE_KEY, JSON.stringify(cellFormatsRef.current || {}))
       } catch {}
     }
     window.addEventListener('beforeunload', onBeforeUnload)
@@ -367,22 +419,30 @@ export default function App() {
       return displayCacheRef.current.get(key)
     }
     const raw = engine.getCell(activeSheet, addr)
+    const cellFormatKey = `${activeSheet}:${addr}`
+    const format = cellFormats[cellFormatKey] || {}
     let out
     if (typeof raw === 'string' && raw.startsWith('=')) {
       const v = engine.evaluateCell(activeSheet, addr)
-      out = formatValue(v)
+      out = formatValue(v, format)
     } else {
-      out = formatValue(raw)
+      out = formatValue(raw, format)
     }
     displayCacheRef.current.set(key, out)
     return out
-  }, [engine, activeSheet, gridVersion])
+  }, [engine, activeSheet, cellFormats])
 
   const getCellRaw = useCallback((row, col) => {
     const addr = toA1(row, col)
     const raw = engine.getCell(activeSheet, addr)
     return raw ?? ''
-  }, [engine, activeSheet, gridVersion])
+  }, [engine, activeSheet])
+
+  const getCellFormat = useCallback((row, col) => {
+    const addr = toA1(row, col)
+    const key = `${activeSheet}:${addr}`
+    return cellFormats[key] || {}
+  }, [activeSheet, cellFormats])
 
   const compileAndRegisterScripts = useCallback((allScripts) => {
     try {
@@ -520,6 +580,39 @@ export default function App() {
     if (window.confirm(`Delete sheet "${target}"? This cannot be undone.`)) deleteSheet(target)
   }, [activeSheet, deleteSheet])
 
+  // ===== Format actions (menu) =====
+  const applyFormatToSelection = useCallback((formatType, value) => {
+    const { row, col, focus } = selection
+    const top = focus ? Math.min(row, focus.row) : row
+    const left = focus ? Math.min(col, focus.col) : col
+    const bottom = focus ? Math.max(row, focus.row) : row
+    const right = focus ? Math.max(col, focus.col) : col
+    
+    const newFormats = { ...cellFormats }
+    for (let r = top; r <= bottom; r++) {
+      for (let c = left; c <= right; c++) {
+        const addr = toA1(r, c)
+        const key = `${activeSheet}:${addr}`
+        
+        if (formatType === 'clear') {
+          // Remove all formatting for this cell
+          delete newFormats[key]
+        } else {
+          const existing = newFormats[key] || {}
+          if (formatType === 'bold' || formatType === 'italic' || formatType === 'underline' || formatType === 'strikethrough') {
+            newFormats[key] = { ...existing, [formatType]: value !== undefined ? value : !existing[formatType] }
+          } else {
+            newFormats[key] = { ...existing, [formatType]: value }
+          }
+        }
+      }
+    }
+    setCellFormats(newFormats)
+    invalidateDisplayCache()
+    setGridVersion((v) => v + 1)
+    schedulePersistSheets()
+  }, [selection, activeSheet, cellFormats, invalidateDisplayCache, schedulePersistSheets])
+
   // ===== Edit actions (menu) =====
   const clearSelectionValues = useCallback(() => {
     const { row, col, focus } = selection
@@ -615,6 +708,8 @@ export default function App() {
           onDeleteValues={clearSelectionValues}
           onDeleteRow={() => deleteRowAt(selection.row)}
           onDeleteColumn={() => deleteColumnAt(selection.col)}
+          onApplyFormat={applyFormatToSelection}
+          getCellFormat={getCellFormat}
         />
         <div style={{ flex: 1 }} />
         <div className="tabs">
@@ -648,7 +743,9 @@ export default function App() {
                     setSelection={setSelection}
                     getCellDisplay={getCellDisplay}
                     getCellRaw={getCellRaw}
+                    getCellFormat={getCellFormat}
                     onEdit={(r, c, text) => setCell(r, c, normalizeInput(text))}
+                    onApplyFormat={applyFormatToSelection}
                   />
                   <SheetTabs
                     sheets={sheetNames}
@@ -697,10 +794,13 @@ export default function App() {
   )
 }
 
-function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDeleteRow, onDeleteColumn }) {
+function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDeleteRow, onDeleteColumn, onApplyFormat, getCellFormat }) {
   const [fileOpen, setFileOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [formatOpen, setFormatOpen] = useState(false)
+  const [textStyleOpen, setTextStyleOpen] = useState(false)
+  const [numberFormatOpen, setNumberFormatOpen] = useState(false)
   const ref = useRef(null)
   const fileInputRef = useRef(null)
 
@@ -711,6 +811,9 @@ function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDele
         setFileOpen(false)
         setEditOpen(false)
         setDeleteOpen(false)
+        setFormatOpen(false)
+        setTextStyleOpen(false)
+        setNumberFormatOpen(false)
       }
     }
     const onKey = (e) => {
@@ -718,6 +821,9 @@ function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDele
         setFileOpen(false)
         setEditOpen(false)
         setDeleteOpen(false)
+        setFormatOpen(false)
+        setTextStyleOpen(false)
+        setNumberFormatOpen(false)
       }
     }
     document.addEventListener('mousedown', onDocClick)
@@ -728,10 +834,12 @@ function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDele
     }
   }, [])
 
+  const currentFormat = getCellFormat ? getCellFormat(selection.row, selection.col) : {}
+
   return (
     <div className="menubar" ref={ref}>
       <div className="menu">
-        <button className="menu-button" onClick={() => { setFileOpen(v => !v); setEditOpen(false) }}>File ▾</button>
+        <button className="menu-button" onClick={() => { setFileOpen(v => !v); setEditOpen(false); setFormatOpen(false) }}>File ▾</button>
         {fileOpen && (
           <div className="menu-dropdown">
             <button className="menu-item" onClick={() => { setFileOpen(false); fileInputRef.current && fileInputRef.current.click() }}>Import CSV…</button>
@@ -761,7 +869,7 @@ function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDele
         />
       </div>
       <div className="menu">
-        <button className="menu-button" onClick={() => { setEditOpen(v => !v); setFileOpen(false) }}>Edit ▾</button>
+        <button className="menu-button" onClick={() => { setEditOpen(v => !v); setFileOpen(false); setFormatOpen(false) }}>Edit ▾</button>
         {editOpen && (
           <div className="menu-dropdown">
             <div
@@ -774,13 +882,146 @@ function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDele
               <span>Delete</span>
               <span style={{ marginLeft: 'auto' }}>▸</span>
               {deleteOpen && (
-                <div className="submenu-dropdown">
+                <div
+                  className="submenu-dropdown"
+                  onMouseEnter={() => setDeleteOpen(true)}
+                  onMouseLeave={() => setDeleteOpen(false)}
+                >
                   <button className="menu-item" onClick={() => { setFileOpen(false); setEditOpen(false); setDeleteOpen(false); onDeleteValues && onDeleteValues() }}>Values</button>
                   <button className="menu-item" onClick={() => { setFileOpen(false); setEditOpen(false); setDeleteOpen(false); onDeleteRow && onDeleteRow() }}>{`Row ${selection && selection.row ? selection.row : 1}`}</button>
                   <button className="menu-item" onClick={() => { setFileOpen(false); setEditOpen(false); setDeleteOpen(false); onDeleteColumn && onDeleteColumn() }}>{`Column ${colLabel(selection && selection.col ? selection.col : 1)}`}</button>
                 </div>
               )}
             </div>
+          </div>
+        )}
+      </div>
+      <div className="menu">
+        <button className="menu-button" onClick={() => { setFormatOpen(v => !v); setFileOpen(false); setEditOpen(false) }}>Format ▾</button>
+        {formatOpen && (
+          <div className="menu-dropdown">
+            <div
+              className="menu-item submenu-trigger"
+              onMouseEnter={() => setTextStyleOpen(true)}
+              onMouseLeave={() => setTextStyleOpen(false)}
+              onClick={() => setTextStyleOpen(v => !v)}
+              style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '8px' }}
+            >
+              <span>Text Style</span>
+              <span style={{ marginLeft: 'auto' }}>▸</span>
+              {textStyleOpen && (
+                <div
+                  className="submenu-dropdown"
+                  onMouseEnter={() => setTextStyleOpen(true)}
+                  onMouseLeave={() => setTextStyleOpen(false)}
+                >
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setTextStyleOpen(false); 
+                      onApplyFormat && onApplyFormat('bold');
+                    }}
+                  >
+                    {currentFormat.bold ? '✓ ' : ''}Bold <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#666' }}>⌘B</span>
+                  </button>
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setTextStyleOpen(false); 
+                      onApplyFormat && onApplyFormat('italic');
+                    }}
+                  >
+                    {currentFormat.italic ? '✓ ' : ''}Italic <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#666' }}>⌘I</span>
+                  </button>
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setTextStyleOpen(false); 
+                      onApplyFormat && onApplyFormat('underline');
+                    }}
+                  >
+                    {currentFormat.underline ? '✓ ' : ''}Underline <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#666' }}>⌘U</span>
+                  </button>
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setTextStyleOpen(false); 
+                      onApplyFormat && onApplyFormat('strikethrough');
+                    }}
+                  >
+                    {currentFormat.strikethrough ? '✓ ' : ''}Strikethrough
+                  </button>
+                </div>
+              )}
+            </div>
+            <div
+              className="menu-item submenu-trigger"
+              onMouseEnter={() => setNumberFormatOpen(true)}
+              onMouseLeave={() => setNumberFormatOpen(false)}
+              onClick={() => setNumberFormatOpen(v => !v)}
+              style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '8px' }}
+            >
+              <span>Number Format</span>
+              <span style={{ marginLeft: 'auto' }}>▸</span>
+              {numberFormatOpen && (
+                <div
+                  className="submenu-dropdown"
+                  onMouseEnter={() => setNumberFormatOpen(true)}
+                  onMouseLeave={() => setNumberFormatOpen(false)}
+                >
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setNumberFormatOpen(false); 
+                      onApplyFormat && onApplyFormat('numberFormat', 'normal');
+                    }}
+                  >
+                    {currentFormat.numberFormat === 'normal' || !currentFormat.numberFormat ? '✓ ' : ''}Normal
+                  </button>
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setNumberFormatOpen(false); 
+                      onApplyFormat && onApplyFormat('numberFormat', 'currency');
+                    }}
+                  >
+                    {currentFormat.numberFormat === 'currency' ? '✓ ' : ''}Currency ($)
+                  </button>
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setNumberFormatOpen(false); 
+                      onApplyFormat && onApplyFormat('numberFormat', 'percentage');
+                    }}
+                  >
+                    {currentFormat.numberFormat === 'percentage' ? '✓ ' : ''}Percentage (%)
+                  </button>
+                  <div className="menu-divider" style={{ height: '1px', background: '#e0e0e0', margin: '4px 0' }} />
+                  <button 
+                    className="menu-item" 
+                    onClick={() => { 
+                      setFormatOpen(false); setNumberFormatOpen(false); 
+                      const precision = window.prompt('Enter number of decimal places (0-10):', currentFormat.precision || '2');
+                      if (precision !== null && /^\d+$/.test(precision)) {
+                        const p = Math.min(10, Math.max(0, parseInt(precision)));
+                        onApplyFormat && onApplyFormat('precision', p);
+                      }
+                    }}
+                  >
+                    Set Decimal Places... {currentFormat.precision !== undefined ? `(${currentFormat.precision})` : ''}
+                  </button>
+                </div>
+              )}
+            </div>
+            <button 
+              className="menu-item" 
+              onClick={() => { 
+                setFormatOpen(false);
+                onApplyFormat && onApplyFormat('clear', null);
+              }}
+            >
+              Clear Formatting
+            </button>
           </div>
         )}
       </div>
@@ -922,11 +1163,26 @@ function parseA1(a1) {
   return { row, col }
 }
 
-function formatValue(v) {
+function formatValue(v, format) {
   if (v == null) return ''
   if (typeof v === 'object' && v.code) return v.code
   if (Array.isArray(v)) return `[${v.join(', ')}]`
-  return String(v)
+  
+  // Apply number formatting if value is numeric
+  let displayValue = v
+  if (typeof v === 'number' && !isNaN(v)) {
+    const precision = format?.precision !== undefined ? format.precision : 2
+    
+    if (format?.numberFormat === 'currency') {
+      displayValue = '$' + v.toFixed(precision)
+    } else if (format?.numberFormat === 'percentage') {
+      displayValue = (v * 100).toFixed(precision) + '%'
+    } else if (format?.precision !== undefined) {
+      displayValue = v.toFixed(precision)
+    }
+  }
+  
+  return String(displayValue)
 }
 
 function normalizeInput(input) {

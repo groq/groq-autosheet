@@ -11,7 +11,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "echo 'No linter configured'"
+    "lint": "echo 'No linter configured'",
+    "dev": "npm --prefix web run dev"
   },
   "devDependencies": {
     "vitest": "^1.6.0"

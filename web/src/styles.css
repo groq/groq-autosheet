@@ -4,19 +4,19 @@ html, body, #root { height: 100%; margin: 0; font-family: system-ui, -apple-syst
 .app { display: flex; flex-direction: column; height: 100%; }
 .toolbar { padding: 8px 12px; border-bottom: 1px solid #ddd; background: #ffffff; color: #111; display: flex; align-items: center; gap: 8px; }
 .title { font-weight: 600; }
-.menubar { display: flex; align-items: center; gap: 8px; }
+.menubar { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .menu { position: relative; }
-.menu-button { padding: 6px 10px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
+.menu-button { padding: 6px 10px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; font: inherit; }
 .menu-dropdown { position: absolute; top: calc(100% + 4px); left: 0; min-width: 220px; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); z-index: 100; padding: 6px; }
-.menu-item { display: block; width: 100%; text-align: left; padding: 6px 8px; background: transparent; border: none; border-radius: 4px; cursor: pointer; color: #111; }
+.menu-item { display: block; width: 100%; text-align: left; padding: 6px 8px; background: transparent; border: none; border-radius: 4px; cursor: pointer; color: #111; font: inherit; }
 .menu-item:hover { background: #f5f5f5; }
 .menu-item.disabled { color: #888; cursor: default; }
-.submenu-dropdown { position: absolute; top: -6px; left: calc(100% + 6px); min-width: 180px; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); z-index: 101; padding: 6px; }
+.submenu-dropdown { position: absolute; top: -6px; left: calc(100% - 1px); min-width: 180px; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); z-index: 101; padding: 6px; }
 .tabs { display: flex; gap: 4px; }
 .tab { padding: 6px 10px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
 .tab.active { background: #e8eefc; border-color: #a8c1ff; }
 .formula-bar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #eee; background: #ffffff; }
-.formula-bar .name { width: 64px; display: flex; align-items: center; justify-content: center; background: #f6f6f6; border: 1px solid #ddd; border-radius: 4px; color: #111; }
+.formula-bar .name { width: 40px; display: flex; align-items: center; justify-content: center; background: #f6f6f6; border: 1px solid #ddd; border-radius: 4px; color: #111; font-size: 12px; }
 .formula-bar input { flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #111; }
 .formula-bar button { background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
 .main { flex: 1; display: flex; min-height: 0; min-width: 0; overflow: hidden; }
@@ -80,6 +80,7 @@ td.sel-anchor { outline: 2px solid #3b82f6; outline-offset: -2px; }
 .file-name { flex: 0 0 auto; text-align: left; background: transparent; border: none; color: #111; cursor: pointer; }
 .file-actions .icon { background: transparent; border: none; cursor: pointer; }
 .editor-area { flex: 1; min-width: 0; min-height: 0; height: 100%; }
+.editor-area .cm-editor { font-size: 12px; }
 .btn { padding: 4px 8px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
 .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #333; }
 .scripts-error { padding: 6px 8px; background: #fff3f3; color: #a10000; border-top: 1px solid #ffd0d0; font-size: 12px; }
@@ -91,6 +92,9 @@ td.sel-anchor { outline: 2px solid #3b82f6; outline-offset: -2px; }
 .chat-title { font-weight: 600; }
 .chat-select { padding: 4px 8px; border: 1px solid #ccc; background: #f7f7f7; color: #111; border-radius: 4px; font: inherit; font-weight: 400; }
 .chat-select:disabled { opacity: 0.7; }
+.chat-toolbar .chat-select { font-size: 14px; }
+.chat-toolbar .btn, .chat-toolbar .chat-select { height: 32px; padding-top: 0; padding-bottom: 0; }
+.chat-toolbar .btn { display: inline-flex; align-items: center; }
 .chat-apikey { width: 280px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #111; }
 .chat-system { display: flex; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid #f3f3f3; }
 .chat-system input { flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #111; }
@@ -154,10 +158,10 @@ td.sel-anchor { outline: 2px solid #3b82f6; outline-offset: -2px; }
 
 /* Modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { width: 640px; max-width: calc(100% - 32px); background: #fff; color: #111; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); display: flex; flex-direction: column; }
-.modal-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #eee; }
-.modal-title { font-weight: 600; }
-.modal-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.modal { width: 760px; max-width: calc(100% - 32px); max-height: calc(100% - 64px); background: #fff; color: #111; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 12px 36px rgba(0,0,0,0.22); display: flex; flex-direction: column; overflow: hidden; }
+.modal-header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #eee; }
+.modal-title { font-weight: 700; font-size: 16px; }
+.modal-body { padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow: auto; }
 .modal-footer { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid #eee; }
 
 /* Forms */
@@ -168,6 +172,23 @@ td.sel-anchor { outline: 2px solid #3b82f6; outline-offset: -2px; }
 .form-row select,
 .form-row textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; background: #fff; color: #111; font: inherit; }
 .form-row textarea { resize: vertical; min-height: 72px; }
+
+/* Subtle help text below labels */
+.help-text { font-size: 12px; color: #666; margin-top: -2px; margin-bottom: 6px; }
+
+/* Server row "card" styling for better separation */
+.server-row { margin-bottom: 8px; padding: 8px; border: 1px solid #eee; border-radius: 8px; background: #fafafa; }
+.server-row:hover { border-color: #e2e2e2; background: #f7f7f7; }
+
+/* Connections list spacing */
+.connections-list { display: flex; flex-direction: column; gap: 6px; }
+.connection-row { padding: 6px 8px; border: 1px dashed #e6e6e6; border-radius: 8px; background: #fbfdff; }
+
+/* Slightly smaller, consistent control typography inside modal to avoid truncation */
+.modal .form-row input[type="text"],
+.modal .form-row input[type="password"],
+.modal .form-row select,
+.modal .form-row textarea { font-size: 14px; }
 
 /* Helpers */
 .inline-input-action { display: flex; gap: 8px; align-items: center; }

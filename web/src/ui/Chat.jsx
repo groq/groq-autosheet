@@ -325,7 +325,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
     // Keep focus in the textarea for rapid follow-ups
     if (inputRef.current) inputRef.current.focus()
     // Append user message and a placeholder assistant message
-    setMessages((prev) => [...prev, { role: 'user', content: prompt }, { role: 'assistant', content: '' }])
+    setMessages((prev) => [...prev, { role: 'user', content: prompt }, { role: 'assistant', content: '', reasoning: '', reasoningStreaming: true }])
     setIsStreaming(true)
     try {
       const reqMessages = []
@@ -353,169 +353,259 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
       // Start conversation with the built request messages (system + history + user)
       const conv = reqMessages.slice()
       let round = 0
+      const MAX_EMPTY_TEXT_RETRIES = 8
+      let emptyTextRetries = 0
       while (true) {
         // For rounds after the first, add a fresh assistant bubble for streaming
         if (round > 0) {
-          setMessages((prev) => ([...prev, { role: 'assistant', content: '', reasoning: '' }]))
+          setMessages((prev) => ([...prev, { role: 'assistant', content: '', reasoning: '', reasoningStreaming: true }]))
         }
 
-        const stream = await groq.chat.completions.create({
-          messages: conv,
-          model,
-          ...sampling,
-          tool_choice: 'auto',
-          tools: toolsDef,
-          stream: true,
-        })
+        // Per-round guard so errors don't exit the whole send flow
+        try {
+          const stream = await groq.chat.completions.create({
+            messages: conv,
+            model,
+            ...sampling,
+            tool_choice: 'auto',
+            tools: toolsDef,
+            stream: true,
+          })
 
-        // Collect tool calls for this round
-        const pendingToolCallsById = new Map()
-        let assistantAccumulatedContent = ''
-        let assistantAccumulatedReasoning = ''
-        let sawToolCalls = false
+          // Collect tool calls for this round
+          const pendingToolCallsById = new Map()
+          let assistantAccumulatedContent = ''
+          let assistantAccumulatedReasoning = ''
+          let sawToolCalls = false
 
-        // Helper: validate JSON quickly
-        const isValidJson = (s) => {
-          try { JSON.parse(s); return true } catch { return false }
-        }
-        // Helper: merge incremental argument fragments without duplicating full objects
-        const mergeArgFragments = (existingArgs, deltaArgs) => {
-          const prev = String(existingArgs || '')
-          const next = String(deltaArgs || '')
-          if (!prev) return next
-          const candidate = prev + next
-          if (isValidJson(next) && !isValidJson(candidate)) {
-            return next
+          // Helper: validate JSON quickly
+          const isValidJson = (s) => {
+            try { JSON.parse(s); return true } catch { return false }
           }
-          return candidate
-        }
-
-        for await (const chunk of stream) {
-          const choice = chunk?.choices?.[0]
-          const deltaObj = choice?.delta || {}
-          const finish = choice?.finish_reason || null
-
-          const contentDelta = deltaObj?.content || ''
-          const reasoningDelta = deltaObj?.reasoning || ''
-          if (contentDelta) {
-            assistantAccumulatedContent += contentDelta
-            setMessages((prev) => {
-              if (prev.length === 0) return prev
-              const updated = prev.slice()
-              const lastIdx = updated.length - 1
-              if (updated[lastIdx]?.role !== 'assistant') return updated
-              updated[lastIdx] = { ...updated[lastIdx], content: (updated[lastIdx].content || '') + contentDelta }
-              return updated
-            })
-          }
-          if (reasoningDelta) {
-            assistantAccumulatedReasoning += reasoningDelta
-            setMessages((prev) => {
-              if (prev.length === 0) return prev
-              const updated = prev.slice()
-              const lastIdx = updated.length - 1
-              if (updated[lastIdx]?.role !== 'assistant') return updated
-              updated[lastIdx] = { ...updated[lastIdx], reasoning: (updated[lastIdx].reasoning || '') + reasoningDelta }
-              return updated
-            })
-          }
-
-          const toolCallsDelta = deltaObj?.tool_calls || []
-          if (toolCallsDelta.length > 0) {
-            sawToolCalls = true
-            for (const call of toolCallsDelta) {
-              if (!call?.id) continue
-              const existing = pendingToolCallsById.get(call.id) || call
-              const merged = {
-                ...existing,
-                function: {
-                  name: call?.function?.name || existing?.function?.name,
-                  arguments: mergeArgFragments(existing?.function?.arguments, call?.function?.arguments),
-                },
-              }
-              pendingToolCallsById.set(call.id, merged)
+          // Helper: merge incremental argument fragments without duplicating full objects
+          const mergeArgFragments = (existingArgs, deltaArgs) => {
+            const prev = String(existingArgs || '')
+            const next = String(deltaArgs || '')
+            if (!prev) return next
+            const candidate = prev + next
+            if (isValidJson(next) && !isValidJson(candidate)) {
+              return next
             }
-            // Reflect partial tool_calls on the last assistant bubble for correctness
+            return candidate
+          }
+
+          for await (const chunk of stream) {
+            const choice = chunk?.choices?.[0]
+            const deltaObj = choice?.delta || {}
+            const finish = choice?.finish_reason || null
+
+            const contentDelta = deltaObj?.content || ''
+            const reasoningDelta = deltaObj?.reasoning || ''
+            if (contentDelta) {
+              assistantAccumulatedContent += contentDelta
+              setMessages((prev) => {
+                if (prev.length === 0) return prev
+                const updated = prev.slice()
+                const lastIdx = updated.length - 1
+                if (updated[lastIdx]?.role !== 'assistant') return updated
+                updated[lastIdx] = { ...updated[lastIdx], content: (updated[lastIdx].content || '') + contentDelta }
+                return updated
+              })
+            }
+            if (reasoningDelta) {
+              assistantAccumulatedReasoning += reasoningDelta
+              setMessages((prev) => {
+                if (prev.length === 0) return prev
+                const updated = prev.slice()
+                const lastIdx = updated.length - 1
+                if (updated[lastIdx]?.role !== 'assistant') return updated
+                updated[lastIdx] = { ...updated[lastIdx], reasoning: (updated[lastIdx].reasoning || '') + reasoningDelta }
+                return updated
+              })
+            }
+
+            const toolCallsDelta = deltaObj?.tool_calls || []
+            if (toolCallsDelta.length > 0) {
+              sawToolCalls = true
+              for (const call of toolCallsDelta) {
+                if (!call?.id) continue
+                const existing = pendingToolCallsById.get(call.id) || call
+                const merged = {
+                  ...existing,
+                  function: {
+                    name: call?.function?.name || existing?.function?.name,
+                    arguments: mergeArgFragments(existing?.function?.arguments, call?.function?.arguments),
+                  },
+                }
+                pendingToolCallsById.set(call.id, merged)
+              }
+              // Reflect partial tool_calls on the last assistant bubble for correctness
+              setMessages((prev) => {
+                if (prev.length === 0) return prev
+                const updated = prev.slice()
+                const lastIdx = updated.length - 1
+                if (updated[lastIdx]?.role !== 'assistant') return updated
+                const tool_calls = Array.from(pendingToolCallsById.values())
+                updated[lastIdx] = { ...updated[lastIdx], tool_calls }
+                return updated
+              })
+            }
+
+            if (finish === 'tool_calls') {
+              // The model intends to call tools; end this stream round
+              // Mark the current assistant reasoning stream as complete
+              setMessages((prev) => {
+                if (prev.length === 0) return prev
+                const updated = prev.slice()
+                let lastIdx = -1
+                for (let i = updated.length - 1; i >= 0; i--) {
+                  if (updated[i] && updated[i].role === 'assistant') { lastIdx = i; break }
+                }
+                if (lastIdx !== -1) {
+                  updated[lastIdx] = { ...updated[lastIdx], reasoningStreaming: false }
+                }
+                return updated
+              })
+              break
+            }
+          }
+
+          const toolCalls = Array.from(pendingToolCallsById.values())
+          if (toolCalls.length === 0 && !sawToolCalls) {
+            // No tool calls this round; finalize assistant content in conversation
+            const text = String(assistantAccumulatedContent || '').trim()
+            if (text.length > 0) {
+              // Mark the current assistant reasoning stream as complete
+              setMessages((prev) => {
+                if (prev.length === 0) return prev
+                const updated = prev.slice()
+                let lastIdx = -1
+                for (let i = updated.length - 1; i >= 0; i--) {
+                  if (updated[i] && updated[i].role === 'assistant') { lastIdx = i; break }
+                }
+                if (lastIdx !== -1) {
+                  updated[lastIdx] = { ...updated[lastIdx], reasoningStreaming: false }
+                }
+                return updated
+              })
+              conv.push({ role: 'assistant', content: assistantAccumulatedContent, reasoning: assistantAccumulatedReasoning })
+              break
+            }
+            // Empty assistant text: remove empty assistant bubble and retry another round
             setMessages((prev) => {
               if (prev.length === 0) return prev
               const updated = prev.slice()
               const lastIdx = updated.length - 1
-              if (updated[lastIdx]?.role !== 'assistant') return updated
-              const tool_calls = Array.from(pendingToolCallsById.values())
-              updated[lastIdx] = { ...updated[lastIdx], tool_calls }
+              if (updated[lastIdx]?.role === 'assistant' && !String(updated[lastIdx]?.content || '').trim()) {
+                updated.pop()
+              }
               return updated
             })
+            emptyTextRetries += 1
+            if (emptyTextRetries >= MAX_EMPTY_TEXT_RETRIES) {
+              // Give up gracefully with a minimal message to avoid infinite loop
+              conv.push({ role: 'assistant', content: 'Sorry, no response was generated. Please try again.' })
+              break
+            }
+            // Small backoff before retrying
+            await new Promise((r) => setTimeout(r, 200))
+            round += 1
+            continue
           }
 
-          if (finish === 'tool_calls') {
-            // The model intends to call tools; end this stream round
+          // Add the assistant message that requested tools to conversation
+          conv.push({ role: 'assistant', content: assistantAccumulatedContent, reasoning: assistantAccumulatedReasoning, tool_calls: toolCalls })
+
+          // Execute tools via Spreadsheet virtual server or remote MCP; add outputs to UI and conversation
+          const safeParseArgs = (argStr) => {
+            try { return JSON.parse(argStr || '{}') } catch {}
+            const s = String(argStr || '')
+            const lastStart = s.lastIndexOf('{')
+            const lastEnd = s.lastIndexOf('}')
+            if (lastStart !== -1 && lastEnd !== -1 && lastEnd > lastStart) {
+              try { return JSON.parse(s.slice(lastStart, lastEnd + 1)) } catch {}
+            }
+            return {}
+          }
+          for (const call of toolCalls) {
+            const functionName = call?.function?.name
+            const toolCallId = call?.id
+            const parsedArgs = safeParseArgs(call?.function?.arguments)
+
+            let result
+            try {
+              // First try local spreadsheet tools
+              let called = false
+              if (isSpreadsheetToolName(functionName)) {
+                result = await runSpreadsheetTool(functionName, parsedArgs, { engine, activeSheet, onEngineMutated })
+                called = true
+              }
+
+              // If not a Spreadsheet tool, find origin connection by name across snapshots
+              const snaps = Array.isArray(mcpSnapshotsRef.current) ? mcpSnapshotsRef.current : []
+              for (const snap of snaps) {
+                const toolList = Array.isArray(snap?.tools) ? snap.tools : []
+                const found = toolList.some((t) => t?.name === functionName)
+                if (found) {
+                  if (snap.state !== 'ready') throw new Error(`MCP server '${snap.name}' not ready (state: ${snap.state})`)
+                  result = await snap.callTool(functionName, parsedArgs)
+                  called = true
+                  break
+                }
+              }
+              if (!called) throw new Error(`Unknown MCP tool: ${functionName}`)
+            } catch (e) {
+              result = { error: String(e && (e.message || e)) }
+            }
+
+            const content = typeof result === 'string' ? result : JSON.stringify(result)
+            conv.push({ role: 'tool', content, tool_call_id: toolCallId })
+
+            setMessages((prev) => ([
+              ...prev,
+              { role: 'tool', content, tool_call_id: toolCallId, name: functionName, args: parsedArgs },
+            ]))
+          }
+
+          // Continue to the next round; the loop will add a fresh assistant bubble
+          round += 1
+        } catch (e) {
+          // Capture APIError status if available and keep trying
+          const status = e && (e.status || e.code || e.name)
+          const msg = String(e && (e.message || e))
+          setError(status ? `${msg} (status: ${status})` : msg)
+          // Mark any currently streaming assistant reasoning as complete
+          setMessages((prev) => {
+            if (prev.length === 0) return prev
+            const updated = prev.slice()
+            let lastIdx = -1
+            for (let i = updated.length - 1; i >= 0; i--) {
+              if (updated[i] && updated[i].role === 'assistant') { lastIdx = i; break }
+            }
+            if (lastIdx !== -1) {
+              updated[lastIdx] = { ...updated[lastIdx], reasoningStreaming: false }
+            }
+            return updated
+          })
+          // Remove empty assistant bubble if nothing streamed
+          setMessages((prev) => {
+            if (prev.length === 0) return prev
+            const updated = prev.slice()
+            const lastIdx = updated.length - 1
+            if (updated[lastIdx]?.role === 'assistant' && !String(updated[lastIdx]?.content || '').trim()) {
+              updated.pop()
+            }
+            return updated
+          })
+          emptyTextRetries += 1
+          if (emptyTextRetries >= MAX_EMPTY_TEXT_RETRIES) {
+            conv.push({ role: 'assistant', content: 'The request failed repeatedly. Please try again.' })
             break
           }
+          await new Promise((r) => setTimeout(r, 300))
+          round += 1
+          continue
         }
-
-        const toolCalls = Array.from(pendingToolCallsById.values())
-        if (toolCalls.length === 0 && !sawToolCalls) {
-          // No tool calls this round; finalize assistant content in conversation and exit loop
-          conv.push({ role: 'assistant', content: assistantAccumulatedContent, reasoning: assistantAccumulatedReasoning })
-          break
-        }
-
-        // Add the assistant message that requested tools to conversation
-        conv.push({ role: 'assistant', content: assistantAccumulatedContent, reasoning: assistantAccumulatedReasoning, tool_calls: toolCalls })
-
-        // Execute tools via Spreadsheet virtual server or remote MCP; add outputs to UI and conversation
-        const safeParseArgs = (argStr) => {
-          try { return JSON.parse(argStr || '{}') } catch {}
-          const s = String(argStr || '')
-          const lastStart = s.lastIndexOf('{')
-          const lastEnd = s.lastIndexOf('}')
-          if (lastStart !== -1 && lastEnd !== -1 && lastEnd > lastStart) {
-            try { return JSON.parse(s.slice(lastStart, lastEnd + 1)) } catch {}
-          }
-          return {}
-        }
-        for (const call of toolCalls) {
-          const functionName = call?.function?.name
-          const toolCallId = call?.id
-          const parsedArgs = safeParseArgs(call?.function?.arguments)
-
-          let result
-          try {
-            // First try local spreadsheet tools
-            let called = false
-            if (isSpreadsheetToolName(functionName)) {
-              result = await runSpreadsheetTool(functionName, parsedArgs, { engine, activeSheet, onEngineMutated })
-              called = true
-            }
-
-            // If not a Spreadsheet tool, find origin connection by name across snapshots
-            const snaps = Array.isArray(mcpSnapshotsRef.current) ? mcpSnapshotsRef.current : []
-            for (const snap of snaps) {
-              const toolList = Array.isArray(snap?.tools) ? snap.tools : []
-              const found = toolList.some((t) => t?.name === functionName)
-              if (found) {
-                if (snap.state !== 'ready') throw new Error(`MCP server '${snap.name}' not ready (state: ${snap.state})`)
-                result = await snap.callTool(functionName, parsedArgs)
-                called = true
-                break
-              }
-            }
-            if (!called) throw new Error(`Unknown MCP tool: ${functionName}`)
-          } catch (e) {
-            result = { error: String(e && (e.message || e)) }
-          }
-
-          const content = typeof result === 'string' ? result : JSON.stringify(result)
-          conv.push({ role: 'tool', content, tool_call_id: toolCallId })
-
-          setMessages((prev) => ([
-            ...prev,
-            { role: 'tool', content, tool_call_id: toolCallId, name: functionName, args: parsedArgs },
-          ]))
-        }
-
-        // Continue to the next round; the loop will add a fresh assistant bubble
-        round += 1
       }
     } catch (err) {
       const msg = String(err && (err.message || err))
@@ -604,9 +694,10 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
               
               <div className="form-row">
                 <label>MCP servers</label>
+                <div className="help-text">Optional tool backends. Enable and configure one or more servers.</div>
                 <div>
                   {mcpServers.map((srv, i) => (
-                    <div key={i} className="inline-input-action" style={{ marginBottom: 6 }}>
+                    <div key={i} className="inline-input-action server-row">
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 10 }}>
                         <input
                           type="checkbox"
@@ -643,7 +734,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
                           })
                         }}
                         title="Transport"
-                        style={{ width: 160, marginRight: 6 }}
+                        style={{ width: 200, marginRight: 6 }}
                       >
                         <option value="http">Streamable HTTP</option>
                         <option value="sse">SSE</option>
@@ -695,14 +786,14 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
                   value={draftSystemPrompt}
                   onChange={(e) => setDraftSystemPrompt(e.target.value)}
                   placeholder="You are a helpful assistant."
-                  rows={4}
+                  rows={6}
                 />
               </div>
               <div className="form-row">
                 <label>Connections</label>
-                <div>
+                <div className="connections-list">
                   {(Array.isArray(mcpSnapshotsRef.current) ? mcpSnapshotsRef.current : []).map((snap, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <div key={i} className="connection-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{
                         display: 'inline-block', width: 8, height: 8, borderRadius: 4,
                         background: snap?.state === 'ready' ? '#1aaa55' : snap?.state === 'failed' ? '#d33' : '#f0ad4e',
@@ -722,6 +813,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
             </div>
             <div className="modal-footer">
               <div style={{ flex: 1 }} />
+              <button className="btn" onClick={closeSettings}>Cancel</button>
               <button className="btn" onClick={saveSettings}>Save</button>
             </div>
           </div>
@@ -758,7 +850,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
                 const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls : []
                 return (
                   <React.Fragment key={idx}>
-                    {hasReasoning ? <ReasoningBubble content={m.reasoning} isStreaming={isStreaming} /> : null}
+                    {hasReasoning ? <ReasoningBubble content={m.reasoning} isStreaming={m.reasoningStreaming === true} /> : null}
                     {hasText ? <MessageBubble role={m.role} content={m.content} /> : null}
                     {toolCalls.map((tc, i) => {
                       const id = tc && tc.id
