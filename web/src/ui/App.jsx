@@ -4,9 +4,28 @@ import { SpreadsheetEngine, registerBuiltins } from 'autosheet'
 import { Grid } from './Grid.jsx'
 import ScriptEditor, { loadScriptsFromStorage, saveScriptsToStorage } from './ScriptEditor.jsx'
 import Chat from './Chat.jsx'
+import FileManager, { getCurrentFileId, setCurrentFileId, collectCurrentState } from './FileManager.jsx'
 import * as acorn from 'acorn'
 
 export default function App() {
+  // File management state
+  const [currentFileName, setCurrentFileName] = useState(() => {
+    // Try to get the current file name from localStorage
+    try {
+      const fileId = getCurrentFileId()
+      if (fileId) {
+        const files = JSON.parse(localStorage.getItem('autosheet.files.v2') || '[]')
+        const file = files.find(f => f.id === fileId)
+        if (file) return file.name
+      }
+    } catch {}
+    return null
+  })
+  const [showFileManager, setShowFileManager] = useState(false)
+  // Auto-save state
+  const [saveStatus, setSaveStatus] = useState('saved') // 'dirty' | 'saving' | 'saved' | 'idle'
+  const autoSaveTimerRef = useRef(null)
+
   const engine = useMemo(() => {
     const e = new SpreadsheetEngine()
     registerBuiltins(e.registry)
@@ -69,11 +88,6 @@ export default function App() {
   const ACTIVE_SHEET_STORAGE_KEY = 'autosheet.activeSheet'
   const CELL_FORMATS_STORAGE_KEY = 'autosheet.cellFormats.v1'
   const saveTimerRef = useRef(null)
-  const activeSheetRef = useRef(activeSheet)
-  useEffect(() => { activeSheetRef.current = activeSheet }, [activeSheet])
-  // Keep latest formats in a ref for unload persistence
-  const cellFormatsRef = useRef(cellFormats)
-  useEffect(() => { cellFormatsRef.current = cellFormats }, [cellFormats])
 
   // Ensure async changes invalidate display cache before re-render
   useEffect(() => {
@@ -113,7 +127,43 @@ export default function App() {
   const schedulePersistSheets = useCallback(() => {
     try { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) } catch {}
     saveTimerRef.current = setTimeout(() => { persistSheetsNow() }, 300)
+    // Mark project dirty for auto-save handling
+    try { markProjectDirty() } catch {}
   }, [persistSheetsNow])
+
+  const saveProjectToCurrentFile = useCallback(() => {
+    const fileId = getCurrentFileId()
+    if (!fileId) return false
+    try {
+      const state = collectCurrentState()
+      const files = JSON.parse(localStorage.getItem('autosheet.files.v2') || '[]')
+      const updatedFiles = files.map((f) => (f.id === fileId ? { ...f, data: state, updatedAt: Date.now() } : f))
+      localStorage.setItem('autosheet.files.v2', JSON.stringify(updatedFiles))
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const markProjectDirty = useCallback(() => {
+    setSaveStatus('dirty')
+    try { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) } catch {}
+    autoSaveTimerRef.current = setTimeout(() => {
+      // Only auto-save if a current file is selected
+      const hasFile = !!getCurrentFileId()
+      if (!hasFile) { setSaveStatus('idle'); return }
+      setSaveStatus('saving')
+      // Defer the actual write so the UI can render the spinner
+      setTimeout(() => {
+        const ok = saveProjectToCurrentFile()
+        if (ok) {
+          setSaveStatus('saved')
+        } else {
+          setSaveStatus('dirty')
+        }
+      }, 300)
+    }, 2000)
+  }, [saveProjectToCurrentFile])
 
   // Load persisted sheets on first mount
   useEffect(() => {
@@ -154,27 +204,6 @@ export default function App() {
         }
       }
     } catch {}
-    // Persist on unload as a safeguard
-    const onBeforeUnload = () => {
-      try {
-        const out = { sheets: {}, activeSheet: activeSheetRef.current, formats: cellFormatsRef.current || {} }
-        for (const [name, dataMap] of engine.sheets.entries()) {
-          const obj = {}
-          for (const [addr, val] of dataMap.entries()) {
-            if (val == null) continue
-            const s = String(val)
-            if (s === '') continue
-            obj[addr] = val
-          }
-          out.sheets[name] = obj
-        }
-        localStorage.setItem(SHEETS_STORAGE_KEY, JSON.stringify(out))
-        localStorage.setItem(ACTIVE_SHEET_STORAGE_KEY, String(activeSheetRef.current || ''))
-        localStorage.setItem(CELL_FORMATS_STORAGE_KEY, JSON.stringify(cellFormatsRef.current || {}))
-      } catch {}
-    }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [engine])
   // Independent view toggles (initialize from storage immediately on client to avoid flicker/races)
   const [showSheet, setShowSheet] = useState(() => {
@@ -491,6 +520,7 @@ export default function App() {
   const handleScriptsChange = useCallback((arr) => {
     saveScriptsToStorage(arr)
     if (liveReload) compileAndRegisterScripts(arr)
+    markProjectDirty()
   }, [liveReload, compileAndRegisterScripts])
 
   const handleScriptsBlur = useCallback((arr) => {
@@ -661,10 +691,76 @@ export default function App() {
     schedulePersistSheets()
   }, [engine, activeSheet, schedulePersistSheets, setSelection, invalidateDisplayCache])
 
+  // When scripts array changes (add/rename/delete), mark dirty
+  useEffect(() => { markProjectDirty() }, [scripts, activeScriptId, markProjectDirty])
+
+  const handleFileChange = useCallback((fileName, fileId) => {
+    setCurrentFileName(fileName)
+    setCurrentFileId(fileId)
+  }, [])
+
   return (
     <div className="app">
       <div className="toolbar">
+        <div className="toolbar-file-info">
+          {currentFileName ? (
+            <span className="file-name">{currentFileName}.as</span>
+          ) : (
+            <span className="file-name unsaved">Unsaved</span>
+          )}
+          {(() => {
+            const hasFile = !!getCurrentFileId()
+            if (!hasFile) return null
+            if (saveStatus === 'saving') {
+              return (
+                <span className={"save-indicator saving"} title="Saving…" aria-label="Saving">
+                  <span className="saving-spinner" />
+                </span>
+              )
+            }
+            if (saveStatus === 'saved') {
+              return (
+                <span className={"save-indicator saved"} title="All changes have been saved" aria-label="Saved">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="12" cy="12" r="11" stroke="#059669" strokeWidth="2" fill="rgba(5,150,105,0.08)" />
+                    <path d="M7 12.5l3.2 3.2L17 9.9" stroke="#059669" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+              )
+            }
+            return null
+          })()}
+        </div>
         <Menubar
+          onFileNew={() => {
+            // Open file manager to handle new file creation properly
+            setShowFileManager(true)
+          }}
+          onFileOpen={() => setShowFileManager(true)}
+          onFileSave={() => {
+            const state = collectCurrentState()
+            const fileId = getCurrentFileId()
+            
+            if (fileId) {
+              // Update existing file
+              try {
+                const files = JSON.parse(localStorage.getItem('autosheet.files.v2') || '[]')
+                const updatedFiles = files.map(f => 
+                  f.id === fileId 
+                    ? { ...f, data: state, updatedAt: Date.now() }
+                    : f
+                )
+                localStorage.setItem('autosheet.files.v2', JSON.stringify(updatedFiles))
+                alert('File saved successfully!')
+              } catch (e) {
+                alert('Failed to save file: ' + e.message)
+              }
+            } else {
+              // No current file, open file manager for save as
+              setShowFileManager(true)
+            }
+          }}
+          onFileSaveAs={() => setShowFileManager(true)}
           onDownloadCsv={() => {
             try {
               const csv = generateCsv(engine, activeSheet)
@@ -790,11 +886,18 @@ export default function App() {
           ))
         })()}
       </div>
+      
+      <FileManager
+        isOpen={showFileManager}
+        onClose={() => setShowFileManager(false)}
+        currentFileName={currentFileName}
+        onFileChange={handleFileChange}
+      />
     </div>
   )
 }
 
-function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDeleteRow, onDeleteColumn, onApplyFormat, getCellFormat }) {
+function Menubar({ onFileNew, onFileOpen, onFileSave, onFileSaveAs, onDownloadCsv, onImportCsv, selection, onDeleteValues, onDeleteRow, onDeleteColumn, onApplyFormat, getCellFormat }) {
   const [fileOpen, setFileOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -842,8 +945,13 @@ function Menubar({ onDownloadCsv, onImportCsv, selection, onDeleteValues, onDele
         <button className="menu-button" onClick={() => { setFileOpen(v => !v); setEditOpen(false); setFormatOpen(false) }}>File ▾</button>
         {fileOpen && (
           <div className="menu-dropdown">
+            <button className="menu-item" onClick={() => { setFileOpen(false); onFileNew && onFileNew() }}>New</button>
+            <button className="menu-item" onClick={() => { setFileOpen(false); onFileOpen && onFileOpen() }}>Open...</button>
+            <button className="menu-item" onClick={() => { setFileOpen(false); onFileSave && onFileSave() }}>Save</button>
+            <button className="menu-item" onClick={() => { setFileOpen(false); onFileSaveAs && onFileSaveAs() }}>Save As...</button>
+            <div className="menu-divider"></div>
             <button className="menu-item" onClick={() => { setFileOpen(false); fileInputRef.current && fileInputRef.current.click() }}>Import CSV…</button>
-            <button className="menu-item" onClick={() => { setFileOpen(false); onDownloadCsv && onDownloadCsv() }}>Download sheet as CSV</button>
+            <button className="menu-item" onClick={() => { setFileOpen(false); onDownloadCsv && onDownloadCsv() }}>Export sheet as CSV</button>
           </div>
         )}
         <input
