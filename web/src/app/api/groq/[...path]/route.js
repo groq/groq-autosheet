@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { ALLOWED_MODELS } from '../allowedModels.js'
 
 // Use the root API base; the client SDK supplies '/openai/v1/...'
 const BASE = 'https://api.groq.com'
@@ -35,10 +36,21 @@ async function forward(req) {
     headers.set('content-type', 'application/json')
     headers.delete('host')
     headers.delete('content-length')
+    let bodyText
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      bodyText = await req.text()
+      let model
+      try {
+        model = JSON.parse(bodyText)?.model
+      } catch {}
+      if (!ALLOWED_MODELS.has(String(model))) {
+        return NextResponse.json({ error: 'Model not allowed' }, { status: 400 })
+      }
+    }
     const res = await fetch(target, {
       method: req.method,
       headers,
-      body: req.method === 'GET' || req.method === 'HEAD' ? undefined : req.body,
+      body: bodyText,
       duplex: 'half',
     })
     const out = sanitizeHeaders(res.headers)

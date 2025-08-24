@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { ALLOWED_MODELS } from './allowedModels.js'
 
 const BASE = 'https://api.groq.com/openai/v1'
 
@@ -31,14 +32,21 @@ export async function POST(req) {
     if (!apiKey) {
       return NextResponse.json({ error: 'Missing GROQ_API_KEY' }, { status: 500 })
     }
-    const body = await req.text()
+    const bodyText = await req.text()
+    let model
+    try {
+      model = JSON.parse(bodyText)?.model
+    } catch {}
+    if (!ALLOWED_MODELS.has(String(model))) {
+      return NextResponse.json({ error: 'Model not allowed' }, { status: 400 })
+    }
     const res = await fetch(target, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body,
+      body: bodyText,
     })
     // Pass through status and stream if present
     const headers = sanitizeHeaders(res.headers)
