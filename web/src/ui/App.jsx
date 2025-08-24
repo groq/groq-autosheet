@@ -566,6 +566,17 @@ export default function App() {
     const data = engine.sheets.get(src)
     engine.sheets.set(dst, data)
     engine.sheets.delete(src)
+    // Move formatting map
+    const newFormats = {}
+    for (const [key, fmt] of Object.entries(cellFormats)) {
+      if (key.startsWith(`${src}:`)) {
+        const addr = key.slice(src.length + 1)
+        newFormats[`${dst}:${addr}`] = fmt
+      } else {
+        newFormats[key] = fmt
+      }
+    }
+    setCellFormats(newFormats)
     // Best-effort: update sheet-qualified references in formulas across all sheets
     const pattern = new RegExp(`(^|[^A-Za-z0-9_])${src}!`, 'g')
     for (const [sheetName, sheetMap] of engine.sheets.entries()) {
@@ -581,7 +592,7 @@ export default function App() {
     setGridVersion((v) => v + 1)
     schedulePersistSheets()
     return true
-  }, [engine, activeSheet, isValidSheetName, invalidateDisplayCache])
+  }, [engine, activeSheet, isValidSheetName, invalidateDisplayCache, cellFormats, schedulePersistSheets])
 
   const deleteSheet = useCallback((name) => {
     const target = String(name || '').trim()
