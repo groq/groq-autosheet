@@ -32,6 +32,24 @@ async function handleProxy(req) {
     if (!target) return NextResponse.json({ error: 'Missing target' }, { status: 400 })
     const targetUrl = sanitizeTarget(target)
 
+    // Magic substitution for Exa MCP default token
+    // If the target is the Exa MCP endpoint and exaApiKey is set to the magic value
+    // replace it with the server-side EXA_API_KEY to avoid exposing secrets client-side
+    let finalTargetUrl = targetUrl
+    try {
+      const u = new URL(finalTargetUrl)
+      if (u.hostname === 'mcp.exa.ai') {
+        const exaApiKeyParam = u.searchParams.get('exaApiKey')
+        if (exaApiKeyParam === '<token>') {
+          const envKey = process.env.EXA_API_KEY
+          if (envKey && typeof envKey === 'string' && envKey.length > 0) {
+            u.searchParams.set('exaApiKey', envKey)
+            finalTargetUrl = u.toString()
+          }
+        }
+      }
+    } catch {}
+
     // Forward method, headers and body with strict header allowlist
     const method = req.method
     // For debugging 5xx errors, we need to read the body first if it's a POST
@@ -72,7 +90,7 @@ async function handleProxy(req) {
     // Important for event-stream endpoints (e.g., SSE or other Streamable HTTP)
     const isGet = method === 'GET'
     const fetchInit = isGet ? { method, headers: forwardedHeaders } : { method, headers: forwardedHeaders, body, duplex: 'half' }
-    const res = await fetch(targetUrl, fetchInit)
+    const res = await fetch(finalTargetUrl, fetchInit)
     
     // Get content type for various checks
     const contentType = res.headers.get('content-type')
@@ -80,7 +98,7 @@ async function handleProxy(req) {
     // Debug event-stream connections (SSE or other Streamable HTTP)
     if (contentType && contentType.includes('text/event-stream')) {
       console.log('[proxy] Event-stream connection established (SSE or Streamable HTTP):', {
-        url: targetUrl,
+        url: finalTargetUrl,
         status: res.status,
         contentType,
         headers: Object.fromEntries(res.headers.entries())
@@ -88,9 +106,9 @@ async function handleProxy(req) {
     }
     
     // Debug log for specific URLs
-    if (targetUrl.includes('.well-known/oauth')) {
+    if (finalTargetUrl.includes('.well-known/oauth')) {
       console.log('[proxy] Fetched OAuth URL:', {
-        url: targetUrl,
+        url: finalTargetUrl,
         status: res.status,
         contentLength: res.headers.get('content-length'),
         contentType
@@ -108,7 +126,7 @@ async function handleProxy(req) {
         }
         
         console.error('[proxy] Upstream 5xx error:', {
-          url: targetUrl,
+          url: finalTargetUrl,
           method,
           status: res.status,
           contentType,
@@ -131,7 +149,7 @@ async function handleProxy(req) {
     }
 
     // Debug logging for 401 responses (only for debugging, don't consume body in production)
-    if (res.status === 401 && targetUrl.includes('githubcopilot')) {
+    if (res.status === 401 && finalTargetUrl.includes('githubcopilot')) {
       const text = await res.text()
       console.log('[proxy] 401 response from GitHub Copilot:', {
         status: res.status,
@@ -157,9 +175,9 @@ async function handleProxy(req) {
     if (shouldBuffer) {
       const text = await res.text()
       // Debug logging for OAuth responses
-      if (targetUrl.includes('.well-known/oauth')) {
+      if (finalTargetUrl.includes('.well-known/oauth')) {
         console.log('[proxy] OAuth response:', {
-          url: targetUrl,
+          url: finalTargetUrl,
           contentType,
           textLength: text.length,
           preview: text.substring(0, 100) + '...',

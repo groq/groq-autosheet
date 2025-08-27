@@ -15,6 +15,7 @@ function createNewFile(name) {
       sheets: {},
       activeSheet: 'Sheet1',
       cellFormats: {},
+      sizes: {},
       scripts: [],
       activeScriptId: null,
       chats: [],
@@ -91,6 +92,7 @@ export function collectCurrentState() {
     sheets: {},
     activeSheet: 'Sheet1',
     cellFormats: {},
+    sizes: {},
     scripts: [],
     activeScriptId: null,
     chats: [],
@@ -117,6 +119,12 @@ export function collectCurrentState() {
     const formatsRaw = localStorage.getItem('autosheet.cellFormats.v1')
     if (formatsRaw) {
       state.cellFormats = JSON.parse(formatsRaw) || {}
+    }
+
+    // Sizes
+    const sizesRaw = localStorage.getItem('autosheet.sizes.v1')
+    if (sizesRaw) {
+      state.sizes = JSON.parse(sizesRaw) || {}
     }
 
     // Scripts
@@ -165,6 +173,7 @@ export function applyFileState(fileData) {
     }))
     localStorage.setItem('autosheet.activeSheet', fileData.activeSheet || 'Sheet1')
     localStorage.setItem('autosheet.cellFormats.v1', JSON.stringify(fileData.cellFormats || {}))
+    localStorage.setItem('autosheet.sizes.v1', JSON.stringify(fileData.sizes || {}))
 
     // Scripts
     if (fileData.scripts && fileData.scripts.length > 0) {

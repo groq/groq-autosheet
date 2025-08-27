@@ -2,6 +2,7 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { javascript } from '@codemirror/lang-javascript'
+import { EditorView } from '@codemirror/view'
 
 const STORAGE_KEY = 'autosheet.scriptFiles.v1'
 
@@ -123,20 +124,40 @@ export default function ScriptEditor({ scripts, setScripts, activeId, setActiveI
         </div>
         <div className="editor-area">
           {active && (
-            <CodeMirror
-              value={active.content}
-              height="100%"
-              extensions={[javascript({ jsx: false, typescript: false })]}
-              onChange={(val) => {
-                const arr = scripts.map((s) => (s.id === active.id ? { ...s, content: val } : s))
-                setScripts(arr)
-                saveScriptsToStorage(arr)
-                onChangeContent && onChangeContent(arr)
-              }}
-              onBlur={() => onBlurContent && onBlurContent(scripts)}
-              theme={undefined}
-              basicSetup={{ lineNumbers: true, foldGutter: true }}
-            />
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <CodeMirror
+                value={active.content}
+                style={{ flex: 1, minHeight: 0, overflow: 'auto' }}
+                height="100%"
+                extensions={[
+                  javascript({ jsx: false, typescript: false }),
+                  EditorView.theme({
+                    "&": { 
+                      height: "100%"
+                    },
+                    ".cm-scroller": { 
+                      overflow: "auto"
+                    }
+                  })
+                ]}
+                onChange={(val) => {
+                  const arr = scripts.map((s) => (s.id === active.id ? { ...s, content: val } : s))
+                  setScripts(arr)
+                  saveScriptsToStorage(arr)
+                  onChangeContent && onChangeContent(arr)
+                }}
+                onBlur={() => onBlurContent && onBlurContent(scripts)}
+                theme={undefined}
+                basicSetup={{ 
+                  lineNumbers: true, 
+                  foldGutter: true,
+                  highlightActiveLine: true,
+                  bracketMatching: true,
+                  closeBrackets: true,
+                  autocompletion: true
+                }}
+              />
+            </div>
           )}
         </div>
       </div>

@@ -1,7 +1,7 @@
 "use client"
 import React, { useRef, useEffect, useState } from 'react'
 
-export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getCellRaw, getCellFormat, onEdit, onApplyFormat }) {
+export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getCellRaw, getCellFormat, onEdit, onApplyFormat, initialColWidths, initialRowHeights, onColumnWidthsChange, onRowHeightsChange }) {
   const tableRef = useRef(null)
   const [editing, setEditing] = useState(null)
   const [editValue, setEditValue] = useState('')
@@ -16,8 +16,24 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
   const DEFAULT_ROW_HEIGHT = 22
   const ROW_HEADER_WIDTH = 40
 
-  const [colWidths, setColWidths] = useState(() => Array.from({ length: cols }, () => DEFAULT_COL_WIDTH))
-  const [rowHeights, setRowHeights] = useState(() => Array.from({ length: rows }, () => DEFAULT_ROW_HEIGHT))
+  const [colWidths, setColWidths] = useState(() => {
+    if (Array.isArray(initialColWidths)) {
+      const base = initialColWidths.map((n) => (Number.isFinite(n) ? Math.max(10, n) : DEFAULT_COL_WIDTH))
+      return base.length >= cols
+        ? base.slice(0, cols)
+        : [...base, ...Array.from({ length: cols - base.length }, () => DEFAULT_COL_WIDTH)]
+    }
+    return Array.from({ length: cols }, () => DEFAULT_COL_WIDTH)
+  })
+  const [rowHeights, setRowHeights] = useState(() => {
+    if (Array.isArray(initialRowHeights)) {
+      const base = initialRowHeights.map((n) => (Number.isFinite(n) ? Math.max(18, n) : DEFAULT_ROW_HEIGHT))
+      return base.length >= rows
+        ? base.slice(0, rows)
+        : [...base, ...Array.from({ length: rows - base.length }, () => DEFAULT_ROW_HEIGHT)]
+    }
+    return Array.from({ length: rows }, () => DEFAULT_ROW_HEIGHT)
+  })
 
   useEffect(() => {
     setColWidths((prev) => {
@@ -34,6 +50,19 @@ export function Grid({ rows, cols, selection, setSelection, getCellDisplay, getC
       return prev.slice(0, rows)
     })
   }, [rows])
+
+  // Emit size changes for persistence
+  useEffect(() => {
+    if (typeof onColumnWidthsChange === 'function' && Array.isArray(colWidths) && colWidths.length === cols) {
+      onColumnWidthsChange(colWidths)
+    }
+  }, [colWidths, cols, onColumnWidthsChange])
+
+  useEffect(() => {
+    if (typeof onRowHeightsChange === 'function' && Array.isArray(rowHeights) && rowHeights.length === rows) {
+      onRowHeightsChange(rowHeights)
+    }
+  }, [rowHeights, rows, onRowHeightsChange])
 
   const startEditing = (row, col, initialValue) => {
     hasCommittedRef.current = false

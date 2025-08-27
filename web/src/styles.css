@@ -26,6 +26,9 @@ html, body, #root { height: 100%; margin: 0; font-family: system-ui, -apple-syst
 .tabs { display: flex; gap: 4px; }
 .tab { padding: 6px 10px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
 .tab.active { background: #e8eefc; border-color: #a8c1ff; }
+.github-badge { position: relative; }
+.github-badge .hack-hint { position: absolute; left: 50%; transform: translate(-50%, 8px); bottom: -24px; background: #24292e; color: #fff; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1; pointer-events: none; white-space: nowrap; opacity: 0; transition: opacity 180ms ease, transform 180ms ease; font-family: "Comic Sans MS", "Comic Sans", "Bradley Hand", "Segoe Print", "Chalkboard SE", cursive; }
+.github-badge:hover .hack-hint { opacity: 1; transform: translate(-50%, 0); }
 .formula-bar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #eee; background: #ffffff; }
 .formula-bar .name { width: 40px; display: flex; align-items: center; justify-content: center; background: #f6f6f6; border: 1px solid #ddd; border-radius: 4px; color: #111; font-size: 12px; }
 .formula-bar input { flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #111; }
@@ -82,7 +85,14 @@ td.sel-anchor { outline: 2px solid #3b82f6; outline-offset: -2px; }
 .scripts-pane { display: flex; flex-direction: column; height: 100%; background: #fff; color: #111; }
 .scripts-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid #eee; }
 .scripts-title { font-weight: 600; }
-.scripts-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.scripts-body { 
+  flex: 1; 
+  min-height: 0; 
+  display: flex; 
+  flex-direction: column; 
+  overflow: hidden;
+  position: relative;
+}
 .file-tree { width: 100%; border-right: 0; border-bottom: 1px solid #eee; display: flex; flex-direction: row; align-items: center; gap: 8px; padding: 6px; flex: 0 0 auto; }
 .file-tree-header { padding: 0; border-bottom: 0; margin-right: 8px; flex: 0 0 auto; }
 .file-list { flex: 1; overflow-x: auto; overflow-y: hidden; display: flex; gap: 6px; white-space: nowrap; }
@@ -90,8 +100,16 @@ td.sel-anchor { outline: 2px solid #3b82f6; outline-offset: -2px; }
 .file-item.active { background: #f5f8ff; }
 .file-name { flex: 0 0 auto; text-align: left; background: transparent; border: none; color: #111; cursor: pointer; }
 .file-actions .icon { background: transparent; border: none; cursor: pointer; }
-.editor-area { flex: 1; min-width: 0; min-height: 0; height: 100%; }
-.editor-area .cm-editor { font-size: 12px; }
+.editor-area { 
+  flex: 1; 
+  min-width: 0; 
+  min-height: 0; 
+  display: flex;
+  flex-direction: column;
+}
+.editor-area .cm-editor { 
+  font-size: 12px; 
+}
 .btn { padding: 4px 8px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
 .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #333; }
 .scripts-error { padding: 6px 8px; background: #fff3f3; color: #a10000; border-top: 1px solid #ffd0d0; font-size: 12px; }

@@ -42,7 +42,7 @@ const MCP_SERVERS_STORAGE_KEY = 'autosheet.mcp.servers'
 // Multiple MCP servers supported
 const CHATS_STORAGE_KEY = 'autosheet.chats.v1'
 const ACTIVE_CHAT_ID_STORAGE_KEY = 'autosheet.chats.activeId'
-const BASE_SYSTEM_PROMPT = `This is not Google Sheets and AppScript does not exist. This is a custom Spreadsheet app that runs in the browser with support for plain JavaScript functions for cell functions in addition to builtins. Only ever generate scripts in JavaScript never in any other programming language.`
+const BASE_SYSTEM_PROMPT = `This is not Google Sheets and AppScript does not exist. This is a custom Spreadsheet app that runs in the browser with support for plain JavaScript functions for cell functions in addition to builtins. Only ever generate scripts in JavaScript never in any other programming language. If you are able to handle as user request by invoking a tool, then do so instead of describing what one could do.`
 
 function createNewChat(title) {
   const id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(16) + Math.random().toString(16).slice(2))
@@ -140,11 +140,15 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
   const [draftModel, setDraftModel] = useState('openai/gpt-oss-20b')
   // no global transport; per-server instead
   const [mcpServers, setMcpServers] = useState(() => {
+    const defaultExa = [
+      { name: 'Exa', url: 'https://mcp.exa.ai/mcp?exaApiKey=<token>', enabled: true, transport: 'http' }
+    ]
     try {
       const raw = localStorage.getItem(MCP_SERVERS_STORAGE_KEY)
       if (raw) {
         const parsed = JSON.parse(raw)
         if (Array.isArray(parsed)) {
+          if (parsed.length === 0) return defaultExa
           return parsed.map((s) => ({
             name: s?.name || 'MCP',
             url: s?.url || '',
@@ -154,7 +158,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
         }
       }
     } catch {}
-    return []
+    return defaultExa
   })
   // Track live MCP connector snapshots
   const mcpSnapshotsRef = useRef([])
@@ -696,7 +700,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
               
               <div className="form-row">
                 <label>MCP servers</label>
-                <div className="help-text">Optional tool backends. Enable and configure one or more servers.</div>
+                <div className="help-text">Optional tool backends. Enable and configure one or more servers. See <a href="https://smithery.ai/" target="_blank" rel="noreferrer noopener">smithery.ai</a> for a directory of remote MCP servers.</div>
                 <div>
                   {mcpServers.map((srv, i) => (
                     <div key={i} className="inline-input-action server-row">

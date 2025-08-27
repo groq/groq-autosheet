@@ -83,10 +83,26 @@ export default function App() {
     } catch {}
     return {}
   })
+  // Keep refs to latest values to avoid stale closures during debounced persists
+  const cellFormatsRef = useRef(cellFormats)
+  useEffect(() => { cellFormatsRef.current = cellFormats }, [cellFormats])
+  const activeSheetRef = useRef(null)
+  useEffect(() => { activeSheetRef.current = activeSheet }, [activeSheet])
+  // Persisted per-sheet column/row sizes
+  const [sheetSizes, setSheetSizes] = useState(() => {
+    try {
+      const raw = localStorage.getItem('autosheet.sizes.v1')
+      if (raw) return JSON.parse(raw)
+    } catch {}
+    return {}
+  })
+  const sheetSizesRef = useRef(sheetSizes)
+  useEffect(() => { sheetSizesRef.current = sheetSizes }, [sheetSizes])
   // ===== Sheet content persistence =====
   const SHEETS_STORAGE_KEY = 'autosheet.sheets.v1'
   const ACTIVE_SHEET_STORAGE_KEY = 'autosheet.activeSheet'
   const CELL_FORMATS_STORAGE_KEY = 'autosheet.cellFormats.v1'
+  const SIZES_STORAGE_KEY = 'autosheet.sizes.v1'
   const saveTimerRef = useRef(null)
 
   // Ensure async changes invalidate display cache before re-render
@@ -99,7 +115,7 @@ export default function App() {
   }, [engine])
 
   const serializeSheets = useCallback(() => {
-    const out = { sheets: {}, activeSheet, formats: cellFormats }
+    const out = { sheets: {}, activeSheet: activeSheetRef.current || activeSheet, formats: cellFormatsRef.current || {} }
     try {
       for (const [name, dataMap] of engine.sheets.entries()) {
         const obj = {}
@@ -113,16 +129,20 @@ export default function App() {
       }
     } catch {}
     return out
-  }, [engine, activeSheet, cellFormats])
+  }, [engine])
 
   const persistSheetsNow = useCallback(() => {
     try {
       const payload = serializeSheets()
       localStorage.setItem(SHEETS_STORAGE_KEY, JSON.stringify(payload))
-      localStorage.setItem(ACTIVE_SHEET_STORAGE_KEY, String(activeSheet || ''))
-      localStorage.setItem(CELL_FORMATS_STORAGE_KEY, JSON.stringify(cellFormats || {}))
+      const latestActive = activeSheetRef.current || activeSheet || ''
+      localStorage.setItem(ACTIVE_SHEET_STORAGE_KEY, String(latestActive))
+      const latestFormats = cellFormatsRef.current || {}
+      localStorage.setItem(CELL_FORMATS_STORAGE_KEY, JSON.stringify(latestFormats))
+      const latestSizes = sheetSizesRef.current || {}
+      localStorage.setItem(SIZES_STORAGE_KEY, JSON.stringify(latestSizes))
     } catch {}
-  }, [serializeSheets, activeSheet, cellFormats])
+  }, [serializeSheets, activeSheet])
 
   const schedulePersistSheets = useCallback(() => {
     try { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) } catch {}
@@ -186,6 +206,14 @@ export default function App() {
           if (parsed.formats && typeof parsed.formats === 'object') {
             setCellFormats(parsed.formats)
           }
+          // Restore persisted sizes from separate key
+          try {
+            const sizesRaw = localStorage.getItem(SIZES_STORAGE_KEY)
+            if (sizesRaw) {
+              const sizesParsed = JSON.parse(sizesRaw)
+              if (sizesParsed && typeof sizesParsed === 'object') setSheetSizes(sizesParsed)
+            }
+          } catch {}
           // If we pre-created Sheet1 but it's not part of saved sheets, remove it when empty
           if (engine.sheets.has('Sheet1') && !names.includes('Sheet1')) {
             const defaultMap = engine.sheets.get('Sheet1')
@@ -210,7 +238,7 @@ export default function App() {
     try { const ss = localStorage.getItem('autosheet.showSheet'); return ss == null ? true : ss !== 'false' } catch { return true }
   })
   const [showScripts, setShowScripts] = useState(() => {
-    try { const sp = localStorage.getItem('autosheet.showScripts'); return sp == null ? true : sp !== 'false' } catch { return true }
+    try { const sp = localStorage.getItem('autosheet.showScripts'); return sp == null ? false : sp !== 'false' } catch { return false }
   })
   const [showChat, setShowChat] = useState(() => {
     try { const sc = localStorage.getItem('autosheet.showChat'); return sc == null ? true : sc !== 'false' } catch { return true }
@@ -577,6 +605,15 @@ export default function App() {
       }
     }
     setCellFormats(newFormats)
+    // Move sizes mapping if present
+    setSheetSizes((prev) => {
+      const next = { ...(prev || {}) }
+      if (next[src]) {
+        next[dst] = next[src]
+        delete next[src]
+      }
+      return next
+    })
     // Best-effort: update sheet-qualified references in formulas across all sheets
     const pattern = new RegExp(`(^|[^A-Za-z0-9_])${src}!`, 'g')
     for (const [sheetName, sheetMap] of engine.sheets.entries()) {
@@ -599,6 +636,12 @@ export default function App() {
     if (!engine.sheets.has(target)) return false
     if (engine.sheets.size <= 1) { alert('Cannot delete the only sheet.'); return false }
     engine.sheets.delete(target)
+    // Drop sizes for deleted sheet
+    setSheetSizes((prev) => {
+      const next = { ...(prev || {}) }
+      if (next[target]) delete next[target]
+      return next
+    })
     if (activeSheet === target) {
       const first = engine.sheets.keys().next().value
       setActiveSheet(first || 'Sheet1')
@@ -749,6 +792,8 @@ export default function App() {
           }}
           onFileOpen={() => setShowFileManager(true)}
           onFileSave={() => {
+            // Flush any pending debounced persist so we capture the latest formats/values
+            try { persistSheetsNow() } catch {}
             const state = collectCurrentState()
             const fileId = getCurrentFileId()
             
@@ -820,6 +865,20 @@ export default function App() {
         />
         <div style={{ flex: 1 }} />
         <div className="tabs">
+          <a
+            href="http://github.com/groq/groq-autosheet"
+            target="_blank"
+            rel="noreferrer noopener"
+            className="github-badge"
+            title="View on GitHub"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px', marginRight: 8, borderRadius: 6, background: '#24292e', color: '#fff', textDecoration: 'none', fontSize: 12 }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false" style={{ display: 'inline-block', fill: 'currentColor' }}>
+              <path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38l-.01-1.33c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
+            </svg>
+            <span>GitHub</span>
+            <span className="hack-hint">Hack on the codebase!</span>
+          </a>
           <button className={showSheet ? 'tab active' : 'tab'} onClick={() => togglePane('sheet')}>Sheet</button>
           <button className={showScripts ? 'tab active' : 'tab'} onClick={() => togglePane('scripts')}>Scripts</button>
           <button className={showChat ? 'tab active' : 'tab'} onClick={() => togglePane('chat')}>Chat</button>
@@ -844,6 +903,7 @@ export default function App() {
                     onSubmit={(text) => setCell(selection.row, selection.col, normalizeInput(text))}
                   />
                   <Grid
+                    key={activeSheet}
                     rows={gridRows}
                     cols={gridCols}
                     selection={selection}
@@ -853,6 +913,24 @@ export default function App() {
                     getCellFormat={getCellFormat}
                     onEdit={(r, c, text) => setCell(r, c, normalizeInput(text))}
                     onApplyFormat={applyFormatToSelection}
+                    initialColWidths={(sheetSizes && sheetSizes[activeSheet] && sheetSizes[activeSheet].cols) ? sheetSizes[activeSheet].cols : undefined}
+                    initialRowHeights={(sheetSizes && sheetSizes[activeSheet] && sheetSizes[activeSheet].rows) ? sheetSizes[activeSheet].rows : undefined}
+                    onColumnWidthsChange={(arr) => {
+                      setSheetSizes((prev) => {
+                        const next = { ...(prev || {}) }
+                        next[activeSheet] = { ...(next[activeSheet] || {}), cols: Array.isArray(arr) ? arr.slice() : [] }
+                        return next
+                      })
+                      schedulePersistSheets()
+                    }}
+                    onRowHeightsChange={(arr) => {
+                      setSheetSizes((prev) => {
+                        const next = { ...(prev || {}) }
+                        next[activeSheet] = { ...(next[activeSheet] || {}), rows: Array.isArray(arr) ? arr.slice() : [] }
+                        return next
+                      })
+                      schedulePersistSheets()
+                    }}
                   />
                   <SheetTabs
                     sheets={sheetNames}
