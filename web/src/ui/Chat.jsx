@@ -42,6 +42,7 @@ const MCP_SERVERS_STORAGE_KEY = 'autosheet.mcp.servers'
 // Multiple MCP servers supported
 const CHATS_STORAGE_KEY = 'autosheet.chats.v1'
 const ACTIVE_CHAT_ID_STORAGE_KEY = 'autosheet.chats.activeId'
+const BASE_SYSTEM_PROMPT = `This is not Google Sheets and AppScript does not exist. This is a custom Spreadsheet app that runs in the browser with support for plain JavaScript functions for cell functions in addition to builtins. Only ever generate scripts in JavaScript never in any other programming language.`
 
 function createNewChat(title) {
   const id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(16) + Math.random().toString(16).slice(2))
@@ -329,9 +330,10 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
     setIsStreaming(true)
     try {
       const reqMessages = []
-      if (systemPrompt && systemPrompt.trim()) {
-        reqMessages.push({ role: 'system', content: systemPrompt.trim() })
-      }
+      const combinedSystem = systemPrompt && systemPrompt.trim()
+        ? `${BASE_SYSTEM_PROMPT}\n\n${systemPrompt.trim()}`
+        : BASE_SYSTEM_PROMPT
+      reqMessages.push({ role: 'system', content: combinedSystem })
       // Include history and the just-added user message
       const hist = [...messages, { role: 'user', content: prompt }]
       for (const m of hist) {
