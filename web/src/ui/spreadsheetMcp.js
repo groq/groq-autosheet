@@ -304,6 +304,11 @@ export async function runSpreadsheetTool(name, args, ctx) {
     if (!('value' in args)) throw new Error('Missing value')
     const value = args.value
     const { sheet: resolvedSheet, addr } = resolveSheetAndAddress(sheet, addressInput)
+    // If the target sheet does not exist, return an MCP error result instead of creating it implicitly
+    const sheetExists = !!(engine && engine.sheets && typeof engine.sheets.has === 'function' && engine.sheets.has(resolvedSheet))
+    if (!sheetExists) {
+      return { error: `Sheet '${resolvedSheet}' does not exist` }
+    }
     engine.setCell(resolvedSheet, addr, value)
     if (typeof ctx?.onEngineMutated === 'function') ctx.onEngineMutated()
     const computed = engine.evaluateCell(resolvedSheet, addr)
@@ -328,6 +333,11 @@ export async function runSpreadsheetTool(name, args, ctx) {
       throw new Error('values must be a non-empty 2D array')
     }
     const { sheet: resolvedSheet, range } = resolveSheetAndRange(sheet, rangeInput)
+    // If the target sheet does not exist, return an MCP error result instead of creating it implicitly
+    const sheetExists = !!(engine && engine.sheets && typeof engine.sheets.has === 'function' && engine.sheets.has(resolvedSheet))
+    if (!sheetExists) {
+      return { error: `Sheet '${resolvedSheet}' does not exist` }
+    }
     const res = engine.setRange(resolvedSheet, range, values)
     if (typeof ctx?.onEngineMutated === 'function') ctx.onEngineMutated()
     const filtered = filterRangeResult(res, 'both')

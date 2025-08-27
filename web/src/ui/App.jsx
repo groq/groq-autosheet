@@ -753,6 +753,24 @@ export default function App() {
     setCurrentFileId(fileId)
   }, [])
 
+  const handleColumnWidthsChange = useCallback((arr) => {
+    setSheetSizes((prev) => {
+      const next = { ...(prev || {}) }
+      next[activeSheet] = { ...(next[activeSheet] || {}), cols: Array.isArray(arr) ? arr.slice() : [] }
+      return next
+    })
+    schedulePersistSheets()
+  }, [activeSheet, schedulePersistSheets])
+
+  const handleRowHeightsChange = useCallback((arr) => {
+    setSheetSizes((prev) => {
+      const next = { ...(prev || {}) }
+      next[activeSheet] = { ...(next[activeSheet] || {}), rows: Array.isArray(arr) ? arr.slice() : [] }
+      return next
+    })
+    schedulePersistSheets()
+  }, [activeSheet, schedulePersistSheets])
+
   return (
     <div className="app">
       <div className="toolbar">
@@ -915,22 +933,8 @@ export default function App() {
                     onApplyFormat={applyFormatToSelection}
                     initialColWidths={(sheetSizes && sheetSizes[activeSheet] && sheetSizes[activeSheet].cols) ? sheetSizes[activeSheet].cols : undefined}
                     initialRowHeights={(sheetSizes && sheetSizes[activeSheet] && sheetSizes[activeSheet].rows) ? sheetSizes[activeSheet].rows : undefined}
-                    onColumnWidthsChange={(arr) => {
-                      setSheetSizes((prev) => {
-                        const next = { ...(prev || {}) }
-                        next[activeSheet] = { ...(next[activeSheet] || {}), cols: Array.isArray(arr) ? arr.slice() : [] }
-                        return next
-                      })
-                      schedulePersistSheets()
-                    }}
-                    onRowHeightsChange={(arr) => {
-                      setSheetSizes((prev) => {
-                        const next = { ...(prev || {}) }
-                        next[activeSheet] = { ...(next[activeSheet] || {}), rows: Array.isArray(arr) ? arr.slice() : [] }
-                        return next
-                      })
-                      schedulePersistSheets()
-                    }}
+                    onColumnWidthsChange={handleColumnWidthsChange}
+                    onRowHeightsChange={handleRowHeightsChange}
                   />
                   <SheetTabs
                     sheets={sheetNames}
