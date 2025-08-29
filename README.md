@@ -1,2 +1,46 @@
-# groq-autosheet
-A browser spreadsheet with an integrated AI chat (with MCP support) powered by Groq inference
+# Autosheet (Groq)
+
+Autosheet is a lightweight, hackable browser spreadsheet with an integrated AI copilot (chat + tools/MCP) running on Groq’s blazing-fast inference. Use it as:
+
+- A reference implementation for GPT-OSS style reasoning and function-calling on Groq
+- A playground to build custom tools/functions and experiment with MCP
+- A simple spreadsheet you can fork and extend
+
+Try it online: https://autosheet.groqlabs.com/
+
+## Quick start
+
+Prereqs: Node 18+.
+
+1) Install and run the web app
+
+```bash
+npm install
+npm run dev
+```
+
+2) Set your Groq API key (for the proxy that forwards chat completions):
+
+```bash
+export GROQ_API_KEY=your_key_here
+```
+
+Then open the dev server URL printed in your terminal (Next.js dev). The in-browser chat will call the `/api/groq` proxy which forwards to `https://api.groq.com/openai/v1/chat/completions` and only allows approved models.
+
+## Project layout
+
+- `src/` – Minimal spreadsheet engine and function registry
+- `web/` – Next.js app (UI: grid, chat, script editor, MCP client)
+  - `web/src/app/api/groq/` – Proxy to Groq API (reads `GROQ_API_KEY`)
+
+## Hack on it
+
+- Add built-in spreadsheet functions in `src/lib/builtins/`
+- Create new chat tools/MCP integrations in `web/src/ui/builtinTools.js`
+- Adjust allowed models in `web/src/app/api/groq/allowedModels.js`
+
+PRs welcome. This repo aims to stay small, readable, and easy to fork.
+
+## License
+
+Apache 2.0. See `LICENSE`.
