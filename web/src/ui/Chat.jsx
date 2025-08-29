@@ -136,6 +136,9 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [showRateLimitToast, setShowRateLimitToast] = useState(false)
+  const showRetryToast = useCallback(() => setShowRateLimitToast(true), [])
+  const hideRetryToast = useCallback(() => setShowRateLimitToast(false), [])
 
   // Settings dialog drafts
   const [draftSystemPrompt, setDraftSystemPrompt] = useState('')
@@ -185,7 +188,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
     try {
       const origin = typeof window !== 'undefined' ? window.location.origin : ''
       const baseURL = origin ? `${origin}/api/groq` : '/api/groq'
-      return new Groq({ apiKey: 'dummy', baseURL, dangerouslyAllowBrowser: true })
+      return new Groq({ apiKey: 'dummy', baseURL, dangerouslyAllowBrowser: true, maxRetries: 5 })
     } catch {
       return null
     }
@@ -396,7 +399,9 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
             tool_choice: 'auto',
             tools: toolsDef,
             stream: true,
-          })
+          }, { maxRetries: 5 })
+          // If we successfully obtained a stream, hide any rate limit toast
+          hideRetryToast()
 
           // Collect tool calls for this round
           const pendingToolCallsById = new Map()
@@ -603,6 +608,12 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
           // Capture APIError status if available and keep trying
           const status = e && (e.status || e.code || e.name)
           const msg = String(e && (e.message || e))
+          const isRateLimit = (status === 429) || (String(status).toLowerCase() === 'ratelimiterror')
+          if (isRateLimit) {
+            showRetryToast()
+          } else {
+            hideRetryToast()
+          }
           setError(status ? `${msg} (status: ${status})` : msg)
           // Mark any currently streaming assistant reasoning as complete
           setMessages((prev) => {
@@ -632,7 +643,9 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
             conv.push({ role: 'assistant', content: 'The request failed repeatedly. Please try again.' })
             break
           }
-          await new Promise((r) => setTimeout(r, 300))
+          const backoffBase = isRateLimit ? 600 : 300
+          const delay = Math.min(5000, backoffBase * Math.pow(2, emptyTextRetries))
+          await new Promise((r) => setTimeout(r, delay))
           round += 1
           continue
         }
@@ -642,6 +655,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
       setError(msg)
     } finally {
       setIsStreaming(false)
+      hideRetryToast()
       // Return focus to the textarea for rapid follow-ups
       if (inputRef.current) inputRef.current.focus()
     }
@@ -852,6 +866,12 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
 
       {error && (
         <div className="chat-error">{error}</div>
+      )}
+
+      {showRateLimitToast && (
+        <div style={{ position: 'fixed', top: 12, right: 12, background: '#333', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 12, zIndex: 1000, boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
+          Servers are busy (429). Retrying...
+        </div>
       )}
 
       <div className="chat-body">
