@@ -293,8 +293,31 @@ export async function runSpreadsheetTool(name, args, ctx) {
     const mode = (args?.mode === 'raw' || args?.mode === 'both') ? args.mode : 'computed'
     const { sheet: resolvedSheet, addr } = resolveSheetAndAddress(sheet, addressInput)
     const out = { sheet: resolvedSheet, address: addr }
-    if (mode === 'raw' || mode === 'both') out.raw = engine.getCell(resolvedSheet, addr)
-    if (mode === 'computed' || mode === 'both') out.computed = engine.evaluateCell(resolvedSheet, addr)
+
+    // Read values first so we can explicitly signal emptiness and avoid undefined keys being omitted
+    let rawVal
+    let compVal
+    if (mode === 'raw' || mode === 'both') rawVal = engine.getCell(resolvedSheet, addr)
+    if (mode === 'computed' || mode === 'both') compVal = engine.evaluateCell(resolvedSheet, addr)
+
+    if (mode === 'raw' || mode === 'both') {
+      const rawEmpty = rawVal === undefined || (typeof rawVal === 'string' && rawVal.length === 0)
+      out.raw = rawEmpty ? null : rawVal
+      if (rawEmpty) out.emptyRaw = true
+    }
+    if (mode === 'computed' || mode === 'both') {
+      const compEmpty = compVal === undefined || (typeof compVal === 'string' && compVal.length === 0)
+      out.computed = compEmpty ? null : compVal
+      if (compEmpty) out.emptyComputed = true
+    }
+
+    if (mode === 'raw') {
+      out.empty = !!out.emptyRaw
+    } else if (mode === 'computed') {
+      out.empty = !!out.emptyComputed
+    } else {
+      out.empty = !!(out.emptyRaw && out.emptyComputed)
+    }
     return enforceCharLimit(out)
   }
 
