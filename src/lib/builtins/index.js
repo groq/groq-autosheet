@@ -230,6 +230,14 @@ export function registerBuiltins(registry) {
     engine.requestAi(text);
     return '(loading…)';
   });
+
+  // Snapshot builtin names for downstream consumers (e.g., UI/system prompt)
+  try {
+    if (registry && typeof registry.names === 'function') {
+      const names = registry.names().filter((n) => n && n !== 'BUILTINS');
+      registry._builtinNames = new Set(names);
+    }
+  } catch {}
 }
 
 function buildCriterion(criterion) {

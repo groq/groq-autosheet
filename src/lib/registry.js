@@ -26,3 +26,13 @@ export class BuiltinRegistry {
 }
 
 
+export function getBuiltinFunctionNames(registry) {
+  if (!registry || typeof registry.names !== 'function') return [];
+  try {
+    return registry.names().filter((n) => n && n !== 'BUILTINS');
+  } catch {
+    return [];
+  }
+}
+
+

@@ -6,6 +6,7 @@ import Groq from 'groq-sdk'
 import { useMcpClient } from './mcpClient.js'
 import { getSpreadsheetTools, isSpreadsheetToolName, runSpreadsheetTool } from './spreadsheetMcp.js'
 import { getBuiltinTools, isBuiltinToolName, runBuiltinTool } from './builtinTools.js'
+import { getBuiltinFunctionNames } from 'autosheet'
 
 function McpConnector({ index, name, url, transport, onSnapshot }) {
   if (transport !== 'http' && transport !== 'sse') return null
@@ -221,6 +222,20 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
   const spreadsheetTools = useMemo(() => getSpreadsheetTools(), [])
   const builtinTools = useMemo(() => getBuiltinTools(), [])
 
+  // Dynamically list builtin spreadsheet functions to constrain JS codegen
+  const builtinFunctionList = useMemo(() => {
+    try {
+      if (!engine || !engine.registry) return []
+      // Prefer the snapshot captured by registerBuiltins if available
+      const names = engine.registry._builtinNames
+        ? Array.from(engine.registry._builtinNames)
+        : (typeof getBuiltinFunctionNames === 'function' ? getBuiltinFunctionNames(engine.registry) : [])
+      return names.filter((n) => n && n !== 'BUILTINS').sort()
+    } catch {
+      return []
+    }
+  }, [engine])
+
   // Build tool list from Builtin + Spreadsheet tools + current snapshots
   const toolsDef = useMemo(() => {
     const snapshots = Array.isArray(mcpSnapshotsRef.current) ? mcpSnapshotsRef.current : []
@@ -336,9 +351,12 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
     setIsStreaming(true)
     try {
       const reqMessages = []
+      const builtinNote = builtinFunctionList.length > 0
+        ? `\n\nSupported builtin spreadsheet functions (only use these when referencing builtins in generated code): ${builtinFunctionList.join(', ')}`
+        : ''
       const combinedSystem = systemPrompt && systemPrompt.trim()
-        ? `${BASE_SYSTEM_PROMPT}\n\n${systemPrompt.trim()}`
-        : BASE_SYSTEM_PROMPT
+        ? `${BASE_SYSTEM_PROMPT}${builtinNote}\n\n${systemPrompt.trim()}`
+        : `${BASE_SYSTEM_PROMPT}${builtinNote}`
       reqMessages.push({ role: 'system', content: combinedSystem })
       // Include history and the just-added user message
       const hist = [...messages, { role: 'user', content: prompt }]
