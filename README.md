@@ -1,4 +1,4 @@
-# Autosheet (Groq)
+# Autosheet (a GroqLabs project)
 
 Autosheet is a lightweight, hackable browser spreadsheet with an integrated AI copilot (chat + tools/MCP) running on Groq’s blazing-fast inference. Use it as:
 
