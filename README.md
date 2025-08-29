@@ -5,8 +5,8 @@
 
 Autosheet is a lightweight, hackable browser spreadsheet with an integrated AI copilot (chat + tools/MCP) running on Groq’s blazing-fast inference. Use it as:
 
-- A reference implementation for GPT-OSS style reasoning and function-calling on Groq
-- A playground to build custom tools/functions and experiment with MCP
+- A reference implementation for GPT-OSS reasoning and function-calling on Groq
+- A playground to build custom tools/functions and experiment with remote MCP servers
 - A simple spreadsheet you can fork and extend
 
 Try it online: https://autosheet.groqlabs.com/
