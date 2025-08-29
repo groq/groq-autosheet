@@ -917,7 +917,7 @@ export default function App() {
                 <>
                   <FormulaBar
                     selection={selection}
-                    getCellRaw={getCellRaw}
+                    rawValue={getCellRaw(selection.row, selection.col)}
                     onSubmit={(text) => setCell(selection.row, selection.col, normalizeInput(text))}
                   />
                   <Grid
@@ -1395,12 +1395,12 @@ function normalizeInput(input) {
   return Number.isNaN(n) ? input : n
 }
 
-function FormulaBar({ selection, getCellRaw, onSubmit }) {
+function FormulaBar({ selection, rawValue, onSubmit }) {
   const [value, setValue] = useState('')
 
   React.useEffect(() => {
-    setValue(getCellRaw(selection.row, selection.col))
-  }, [selection, getCellRaw])
+    setValue(rawValue)
+  }, [selection, rawValue])
 
   return (
     <div className="formula-bar">

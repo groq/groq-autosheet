@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import Groq from 'groq-sdk'
 import { useMcpClient } from './mcpClient.js'
 import { getSpreadsheetTools, isSpreadsheetToolName, runSpreadsheetTool } from './spreadsheetMcp.js'
+import { getBuiltinTools, isBuiltinToolName, runBuiltinTool } from './builtinTools.js'
 
 function McpConnector({ index, name, url, transport, onSnapshot }) {
   if (transport !== 'http' && transport !== 'sse') return null
@@ -218,11 +219,12 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
   }, [mcpServers, upsertMcpSnapshot])
 
   const spreadsheetTools = useMemo(() => getSpreadsheetTools(), [])
+  const builtinTools = useMemo(() => getBuiltinTools(), [])
 
-  // Build tool list from Spreadsheet tools + current snapshots
+  // Build tool list from Builtin + Spreadsheet tools + current snapshots
   const toolsDef = useMemo(() => {
     const snapshots = Array.isArray(mcpSnapshotsRef.current) ? mcpSnapshotsRef.current : []
-    const merged = [...spreadsheetTools]
+    const merged = [...builtinTools, ...spreadsheetTools]
     for (let i = 0; i < snapshots.length; i++) {
       const snap = snapshots[i]
       const toolList = Array.isArray(snap?.tools) ? snap.tools : []
@@ -239,7 +241,7 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
       }
     }
     return merged
-  }, [mcpSnapshotsVersion, spreadsheetTools])
+  }, [mcpSnapshotsVersion, builtinTools, spreadsheetTools])
 
   const saveSystemPrompt = useCallback((val) => {
     try { localStorage.setItem(SYSTEM_PROMPT_STORAGE_KEY, val) } catch {}
@@ -540,8 +542,12 @@ export default function Chat({ engine, activeSheet, onEngineMutated }) {
 
             let result
             try {
-              // First try local spreadsheet tools
+              // First try local builtin and spreadsheet tools
               let called = false
+              if (isBuiltinToolName(functionName)) {
+                result = await runBuiltinTool(functionName, parsedArgs)
+                called = true
+              }
               if (isSpreadsheetToolName(functionName)) {
                 result = await runSpreadsheetTool(functionName, parsedArgs, { engine, activeSheet, onEngineMutated })
                 called = true
