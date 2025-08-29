@@ -15,7 +15,7 @@
     "dev": "npm --prefix web run dev"
   },
   "devDependencies": {
-    "vitest": "^1.6.0"
+    "vitest": "^3.2.4"
   }
 }
 
