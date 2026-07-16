@@ -2,15 +2,46 @@ import { NextResponse } from 'next/server'
 
 export const runtime = 'nodejs'
 
-function sanitizeTarget(t) {
-  try {
-    const u = new URL(t)
-    // Disallow loopback to our own internal APIs
-    if (u.origin === 'null') throw new Error('Invalid URL')
-    return u.toString()
-  } catch {
-    throw new Error('Invalid target URL')
+const DEFAULT_ALLOWED_PROXY_HOSTS = ['mcp.exa.ai']
+
+class ProxyError extends Error {
+  constructor(message, status = 400) {
+    super(message)
+    this.status = status
   }
+}
+
+function getAllowedProxyHosts() {
+  const configuredHosts = process.env.MCP_PROXY_ALLOWED_HOSTS
+  const hosts = configuredHosts ? configuredHosts.split(',') : DEFAULT_ALLOWED_PROXY_HOSTS
+  return new Set(
+    hosts
+      .map((host) => String(host).trim().toLowerCase())
+      .filter(Boolean)
+  )
+}
+
+function sanitizeTarget(t) {
+  let u
+  try {
+    u = new URL(t)
+  } catch {
+    throw new ProxyError('Invalid target URL')
+  }
+
+  if (u.protocol !== 'https:') {
+    throw new ProxyError('Target URL must use HTTPS')
+  }
+  if (u.username || u.password) {
+    throw new ProxyError('Target URL must not contain credentials')
+  }
+
+  const allowedHosts = getAllowedProxyHosts()
+  if (!allowedHosts.has(u.hostname.toLowerCase())) {
+    throw new ProxyError('Target host is not allowed')
+  }
+
+  return u.toString()
 }
 
 export async function GET(req) {
@@ -72,7 +103,6 @@ async function handleProxy(req) {
     const forwardedHeaders = new Headers()
     const allow = new Set([
       'accept',
-      'authorization',
       'content-type',
       'mcp-session-id',
       'mcp-transport',
@@ -89,8 +119,14 @@ async function handleProxy(req) {
     // For GET, avoid sending a body and keep headers; for POST allow body
     // Important for event-stream endpoints (e.g., SSE or other Streamable HTTP)
     const isGet = method === 'GET'
-    const fetchInit = isGet ? { method, headers: forwardedHeaders } : { method, headers: forwardedHeaders, body, duplex: 'half' }
+    const fetchInit = isGet
+      ? { method, headers: forwardedHeaders, redirect: 'manual' }
+      : { method, headers: forwardedHeaders, body, duplex: 'half', redirect: 'manual' }
     const res = await fetch(finalTargetUrl, fetchInit)
+
+    if (res.status >= 300 && res.status < 400) {
+      return NextResponse.json({ error: 'Upstream redirects are not allowed' }, { status: 502 })
+    }
     
     // Get content type for various checks
     const contentType = res.headers.get('content-type')
@@ -204,8 +240,7 @@ async function handleProxy(req) {
     
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
   } catch (err) {
-    return NextResponse.json({ error: String(err && (err.message || err)) }, { status: 500 })
+    return NextResponse.json({ error: String(err && (err.message || err)) }, { status: err && err.status ? err.status : 500 })
   }
 }
-
 
